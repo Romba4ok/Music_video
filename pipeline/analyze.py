@@ -16,11 +16,21 @@ def norm(s):
     return re.sub(r"[^\w\s]", "", s.lower(), flags=re.U).strip()
 
 
+def _pcm16k(path):
+    """Decode with ffmpeg (already required) so faster-whisper's PyAV decoder, which breaks across av versions, is not used."""
+    import subprocess
+
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype=np.float32)
+
+
 def transcribe(path, cfg):
     from faster_whisper import WhisperModel
     w = cfg["whisper"]
     model = WhisperModel(w["model"], device=w["device"], compute_type=w["compute_type"])
-    segs, _ = model.transcribe(str(path), language=cfg["language"], word_timestamps=True,
+    segs, _ = model.transcribe(_pcm16k(path), language=cfg["language"], word_timestamps=True,
                                condition_on_previous_text=False)
     lines = []
     for s in segs:
