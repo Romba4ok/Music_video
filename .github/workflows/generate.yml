@@ -2,6 +2,8 @@ name: generate
 # Google Drive in/out. UNTESTED on GitHub Actions (cannot be run locally): first run via "Run workflow", read the log, then rely on cron.
 # Drive folder (its ID = secret GDRIVE_FOLDER_ID):  audio/ (you drop songs)  ready/<date>/ (results)  done/ (processed songs)  queue.txt (optional)
 on:
+  push:
+    branches: [master]
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
