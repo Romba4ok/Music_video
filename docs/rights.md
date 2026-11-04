@@ -1,0 +1,36 @@
+# Rights, sources, AI label, publishing
+
+## Music (mode `with_audio`, default)
+- The song audio is added to the video by our pipeline. The audio file is **supplied by the account owner** in `accounts/main/audio/<artist> - <title>.<mp3|wav|m4a>`. The owner is responsible for having the right to publish it.
+- The pipeline never downloads songs from streaming platforms/YouTube, never bypasses DRM or access limits. No file in `audio/` => that song is skipped and reported ("need audio: <artist> – <title>"), never replaced with invented data.
+- `accounts/main/audio/sources.json` (owner-maintained, one entry per file): `{"<file>": {"source": "where it came from", "license": "owned|purchased|licensed|other"}}`. `pipeline/sources.py` reads it for the local source; a missing entry is labelled `owner-supplied`.
+- Allowed automatic sources (`config.json`): Openverse and Jamendo (only CC0/PD/CC-BY results pass; NC/ND/SA/unknown are rejected), yt-dlp only on allowlisted domains and only if the page itself declares CC-BY/CC0. Attribution is written to `meta-<n>.json` and must go into the caption. Commercial songs are never fetched.
+- Known risk (state once to the owner, do not repeat in outputs): TikTok may mute, restrict or claim videos with commercial tracks. The built-in TikTok sound library is the zero-risk alternative: set `mode: commentary` (no audio in file) and add the sound in the app when confirming the post.
+- Mode `tiktok`: the audio file is used only for local analysis (lyrics timing, beats, chorus); it is not mixed into the video and not uploaded anywhere. The official sound is added inside TikTok.
+- Any legally obtained mp4/mov/mkv/webm is converted to audio with ffmpeg (`download.ensure_audio`). A local video needs an entry in `audio/sources.json` (or `--i-have-rights`); a video from a verified CC download inherits its license sidecar.
+- Fallback `commentary`: silent video, our own text about the meaning.
+
+## Lyrics
+- Lyric text on cards comes from `pipeline/analyze.py` (faster-whisper word timestamps on the supplied file), never from memory. Low-confidence words are kept, counted and flagged; QA fails a video with more than 15% of them (the owner then edits the words or skips the song).
+- Show only the chosen 30–60 s fragment (the most recognisable part, see `docs/video-spec.md`), not the whole song.
+- In `commentary` mode: no quotes from memory unless certain; paraphrase.
+
+## Images and fonts
+- Default: no third-party images. Visuals are CSS/SVG/GSAP in `template/scenes/`; fonts are the bundled HyperFrames fonts.
+- Third-party image only if CC0/clearly permissive, recorded in `assets/credits.json` (`{file, source_url, license, author}`); QA check #10 fails without it.
+- No cover art, artist photos, logos, clip screenshots.
+
+## AI label
+TikTok requires labelling AI-generated content. Direct Post API: `is_aigc: true` always. Inbox upload cannot carry it: the owner turns on "AI-generated content" in the app when posting; `publish.yml` writes this reminder into the run summary.
+
+## Publishing (official only)
+- `inbox`: `POST /v2/post/publish/inbox/video/init/` (scope `video.upload`, no audit). Video lands in the creator's inbox; owner finishes the post. Caption is not sendable via this API: it is stored in the Release as `caption.txt` and shown in the run summary. Limit: 5 pending shares / 24 h.
+- `direct`: `POST /v2/post/publish/video/init/` (scope `video.publish`). Unaudited app => private posts only. Switch via `publish_mode` in `config.json` after audit.
+- `manual`: no API; owner downloads from the Release.
+- Browser automation / password login: not used.
+
+## Storage and cleanup
+Videos + `meta.json` (caption, hashtags, slot) go to GitHub Release `d-<date>` in the private repo. Audio files in `accounts/main/audio/` live in the repo (private) and are never put in the Release. After confirmed publish/inbox success: delete the Release assets, append to `log.md`, remove the song from `queue.md`. Delete nothing before upload is confirmed.
+
+## Secrets
+GitHub Secrets only: `CLAUDE_CODE_OAUTH_TOKEN`, `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REFRESH_TOKEN`. Never echo them.

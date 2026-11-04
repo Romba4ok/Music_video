@@ -1,0 +1,7 @@
+.venv/
+out/
+__pycache__/
+.pytest_cache/
+.hyperframes/
+accounts/*/audio/*
+!accounts/*/audio/sources.json

@@ -1,0 +1,21 @@
+{
+  "language": "ru",
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "min_len": 30,
+  "max_len": 60,
+  "tail_sec": 2.5,
+  "target_lufs": -14,
+  "max_true_peak": -1,
+  "publish_mode": "inbox",
+  "default_hashtags": ["#казахстан", "#рэп", "#смысл"],
+  "audio_dir": "accounts/main/audio",
+  "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5},
+  "licenses_allowed": ["cc0", "pdm", "by"],
+  "sources": {
+    "order": ["local", "openverse", "jamendo"],
+    "ytdlp_allowed_domains": ["youtube.com", "youtu.be", "archive.org"]
+  },
+  "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"}
+}

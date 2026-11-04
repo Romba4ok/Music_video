@@ -1,0 +1,12 @@
+Daily generation task. Follow `CLAUDE.md` token rules. Account: main. Date: {{DATE}}.
+Cheapest option: `python -m pipeline batch --mode {{MODE}} --count 3` does steps 3–6 below with no LLM (auto captions/metaphors). Use the steps below only when Claude-written captions/metaphors are wanted. MODE = `auto` (mp4 with sound) or `tiktok` (silent mp4 + sync file).
+
+1. Read `accounts/main/brief.md`, last 30 rows of `accounts/main/log.md`, `accounts/main/queue.md`, `docs/video-spec.md` (once).
+2. Trends (cheap, optional): `python -m pipeline.tiktok_trends` prints top hashtags/formats/songs and per-source statuses. Use hashtags from it for captions; ignore if all sources report needs_auth/empty.
+3. Choose 3 songs: first 3 queue lines not in the log with a usable audio file. Usable = file already in `accounts/main/audio/`. If missing, try `python -m pipeline.sources "<artist> <title>"` then `python -m pipeline.download` (allowed sources only: CC0/CC-BY). Nothing found => skip and list "need audio: <artist> – <title>". If fewer than 3 usable: queue REFILL (only allowed web search, see queue.md).
+4. Write `out/{{DATE}}/songs.json`: `[{"artist","title","audio":"accounts/main/audio/<file>","popular_line":"<from queue or empty>"}, ...]`. Run `python -m pipeline.analyze out/{{DATE}}` once; it writes `analysis-<n>.json` (whisper lyrics + word times, beats, chorus, fragment 30–60 s around the popular line) and prints one `summary` line each. Read only those summary lines.
+5. For each song write `out/{{DATE}}/spec-<n>.json` per `docs/video-spec.md` (mode `with_audio`; song, audio path, metaphor, palette, caption ≤150 chars, 3–5 hashtags, `ai_label: true`). Metaphor + palette must differ from the last 3 log rows. Fragment is chosen by analyze; do not edit it.
+6. Run `python -m pipeline.build out/{{DATE}}` (scenes from lyrics, audio mix, render, QA; prints PASS/FAIL/SKIP lines). On FAIL edit only the named spec fields and rerun with `--only <n>`; max 2 retries per video.
+7. Reply with at most 5 lines: `<id> | <artist> – <title> | PASS|FAIL`, plus any "need audio" lines. Do not upload; the workflow uploads PASSed videos (`meta-<n>.json` + `work-<n>/final.mp4`).
+
+Forbidden: web search outside REFILL, repo exploration, reading HyperFrames docs, viewing frames, writing scene HTML, reading full analysis word lists, touching `log.md`/`queue.md`, printing secrets, fetching audio from sources outside `pipeline.sources`/`pipeline.download` (they enforce the license policy).
