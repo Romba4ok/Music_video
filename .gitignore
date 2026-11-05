@@ -5,3 +5,11 @@ __pycache__/
 .hyperframes/
 accounts/*/audio/*
 !accounts/*/audio/sources.json
+/audio/
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.ogg
+node_modules/
+.venv/

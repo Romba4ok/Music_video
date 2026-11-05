@@ -27,6 +27,11 @@ def validate_spec(spec, cfg):
         errs.append("hashtags: 3-5 items starting with #")
     if spec["ai_label"] is not True:
         errs.append("ai_label must be true")
+    from .render_widgets import KINDS
+    for w in spec.get("widgets") or []:
+        ln = w.get("lines")
+        if not (isinstance(ln, list) and ln and all(isinstance(x, int) and x >= 0 for x in ln)) or w.get("kind", "scene") not in KINDS:
+            errs.append(f"widget invalid (lines=[int..], kind in {list(KINDS)}): {str(w)[:80]}")
     if spec["mode"] == "commentary":
         sc = spec.get("scenes") or []
         if not sc:

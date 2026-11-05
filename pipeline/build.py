@@ -44,7 +44,8 @@ def _plan(spec, d, n, cfg):
         if not analysis.get("fragment"):
             raise ValueError("analysis has no fragment (no lyrics recognised)")
         return script_gen.build_scenes(analysis, spec["song"], cfg,
-                                       intro=cfg.get("intro_sec", 0.0) if cfg.get("style") == "widgets" else 0.0)
+                                       intro=cfg.get("intro_sec", 0.0) if cfg.get("style") == "widgets" else 0.0,
+                                       widgets=spec.get("widgets") if cfg.get("style") == "widgets" else None)
     scenes = [{"role": "outro" if s["role"] == "outro" else "meaning", "text": s["text"], "start": s["start"],
                "end": round(s["start"] + s["dur"], 3), "words": []} for s in spec.get("scenes", [])]
     return {"duration": round(max((s["end"] for s in scenes), default=0), 2), "scenes": scenes, "beats": []}

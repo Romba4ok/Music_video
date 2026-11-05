@@ -138,7 +138,7 @@ def check(workdir):
 
 
 def make_audio(src, start, length, out, cfg, fade=1.5):
-    af = f"apad=whole_dur={length},afade=t=out:st={max(0, length - fade):.2f}:d={fade},loudnorm=I={cfg['target_lufs']}:TP={cfg['max_true_peak']}:LRA=11"
+    af = f"apad=whole_dur={length},afade=t=out:st={max(0, length - fade):.2f}:d={fade},loudnorm=I={cfg['target_lufs']}:TP={cfg['max_true_peak'] - 1}:LRA=11"
     rc, log = _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start}", "-t", f"{length}", "-i", str(src), "-vn", "-af", af,
                     "-ar", "48000", "-c:a", "aac", "-b:a", "192k", str(out)])
     if rc:

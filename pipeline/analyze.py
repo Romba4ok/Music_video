@@ -39,7 +39,27 @@ def transcribe(path, cfg):
         if words:
             lines.append({"start": words[0]["s"], "end": words[-1]["e"], "text": " ".join(x["w"] for x in words),
                           "words": words})
-    return lines
+    return clean_lines(lines, cfg["language"])
+
+
+def clean_lines(lines, lang):
+    """Russian recognition sometimes hallucinates Latin tokens ('canceled', 'Вdablo'): drop them; lines left empty vanish."""
+    if lang != "ru":
+        return lines
+    out = []
+    for ln in lines:
+        ws = [w for w in ln["words"] if not re.search(r"[A-Za-z]", w["w"])]
+        if ws:
+            out.append({"start": ws[0]["s"], "end": ws[-1]["e"], "text": " ".join(w["w"] for w in ws), "words": ws})
+    return out
+
+
+def refragment(analysis, cfg, popular_line=""):
+    """Re-clean saved lines and recompute chorus + fragment without running whisper again."""
+    lines = clean_lines(analysis["lines"], cfg["language"])
+    chorus = find_chorus(lines)
+    frag = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
+    return dict(analysis, lines=lines, fragment=frag)
 
 
 def beats(path):

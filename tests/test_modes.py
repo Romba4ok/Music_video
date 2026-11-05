@@ -205,3 +205,13 @@ def test_short_audio_is_padded_to_requested_length(tmp_path):
     out = tmp_path / "o.m4a"
     render.make_audio(src, 0, 6, out, load_config())
     assert abs(float(qa.probe(out)["format"]["duration"]) - 6) < 0.3
+
+
+def test_clean_lines_drops_latin_hallucinations_in_russian():
+    from pipeline import analyze
+    w = lambda t, s: {"w": t, "s": s, "e": s + .5, "p": .9}
+    lines = [{"start": 0, "end": 1, "text": "x", "words": [w("Привет", 0), w("canceled", .5)]},
+             {"start": 2, "end": 3, "text": "y", "words": [w("Vdablo", 2)]}]
+    got = analyze.clean_lines(lines, "ru")
+    assert [l["text"] for l in got] == ["Привет"]
+    assert analyze.clean_lines(lines, "en") == lines

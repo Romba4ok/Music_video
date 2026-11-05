@@ -14,7 +14,7 @@ Automatic, free tools only, official publishing APIs only. One account now (`acc
 ## Honesty rules
 - Lyrics on cards come from the whisper transcript of the supplied audio, never from memory. Never invent facts about songs or artists. Low-confidence words are flagged, not guessed.
 - Audio is added by the pipeline from files the owner puts in `accounts/main/audio/`. Never fetch/download songs yourself.
-- Show the song's most popular line (chorus hook), a fragment of 30–60 s (length follows the meaning: the whole thought of the lines, ~30 s minimum), never the whole song.
+- Show the song's most popular line (chorus hook), a fragment of 20–35 s (length follows the meaning: ends where the thought ends, never mid-sentence), never the whole song.
 - Never claim a check passed if the script did not run it.
 - If a resource is not legally available, say so; do not substitute invented data.
 
@@ -26,6 +26,7 @@ Automatic, free tools only, official publishing APIs only. One account now (`acc
 - `docs/qa.md` automatic checks
 - `docs/rights.md` music/image licensing, AI label, publishing
 - `docs/hyperframes-notes.md` render contract cheat sheet
+- `docs/widgets-template.md` widget-edit template: layout, pacing, card kinds, how to pick pictures for lyric meaning
 - `prompts/generate.md` the daily task for `claude -p`
 
 ## Secrets
