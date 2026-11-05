@@ -261,7 +261,8 @@ def _body(kind, w, i, s, d, text):
         if w.get("big"):
             over += f'<div class="sbig">{_esc(w["big"], 8)}</div>'
         if w.get("emblem") in ("crown", "heart", "star"):
-            over += f'<svg id="em{i}" class="emb" viewBox="0 0 100 100">{_emblem(w["emblem"])}</svg>'
+            over += (f'<svg id="em{i}" class="emb" viewBox="0 0 100 100"' + (' style="left:600px;top:70px;width:170px;height:170px"' if w.get("big") else "")
+                     + f'>{_emblem(w["emblem"])}</svg>')
             j.append(f'tl.fromTo("#em{i}",{{opacity:0,y:-60,rotation:-14,scale:.6,transformOrigin:"50% 50%"}},{{opacity:1,y:0,rotation:0,scale:1,duration:.5,ease:"bounce.out"}},{at(.18)});')
         if w.get("pill"):
             over += f'<div id="pl{i}" class="spill"><i></i>{_esc(w["pill"], 24)}</div>'

@@ -1,0 +1,44 @@
+import json
+
+from pipeline import author
+
+CFG = {"min_len": 10, "max_len": 40, "author": {"enabled": True}}
+LINES = [{"text": f"строка {i}", "start": i * 4.0, "end": i * 4.0 + 3.5, "words": []} for i in range(8)]
+AN = {"lines": LINES, "fragment": {"first": 0, "last": 7, "start": 0.0, "end": 31.5, "length": 31.5, "reason": "t"}}
+SPEC = {"id": "x", "caption": "c", "hashtags": ["#a", "#b", "#c"]}
+ENTRY = {"artist": "A", "title": "T"}
+GOOD = {"trim": {"from": 1, "to": 5}, "hook": "кто виноват?", "caption": "Про любовь. Сделано с ИИ",
+        "widgets": [{"lines": [0, 1], "kind": "pair", "a": "Я", "b": "Ты", "notify": {"app": "Сообщения", "text": "Новое", "icon": "#34c759"}},
+                    {"lines": [2], "kind": "thermo", "from": 36.6, "to": 38.9},
+                    {"lines": [3], "kind": "hack", "label": "x"},       # unknown kind: dropped
+                    {"lines": [3, 4], "kind": "ring", "from": 0, "to": 100, "icon": "javascript:1"}]}  # bad icon dropped, lines 3,4 free
+
+
+def run(res, cfg=CFG):
+    return author.author(ENTRY, AN, SPEC, cfg, runner=lambda p, c: res if isinstance(res, str) else json.dumps(res))
+
+
+def test_off_by_env_and_by_config():
+    assert run(GOOD)[2] == "off"  # conftest sets VYBEX_NO_AUTHOR
+
+
+def test_good_answer_trims_and_sanitizes(monkeypatch):
+    monkeypatch.delenv("VYBEX_NO_AUTHOR")
+    an, sp, st = run("```json\n" + json.dumps(GOOD) + "\n```")
+    assert st.startswith("claude") and "trim 1..5" in st
+    assert (an["fragment"]["first"], an["fragment"]["last"]) == (1, 5) and an["fragment"]["length"] == 19.5
+    kinds = [w["kind"] for w in sp["widgets"]]
+    assert kinds == ["pair", "thermo", "ring"] and sp["hook"] == "КТО ВИНОВАТ?" and sp["caption"].endswith("ИИ")
+    assert sp["widgets"][1]["from"] == 36.6 and "icon" not in sp["widgets"][2]
+
+
+def test_bad_trim_is_ignored_and_failures_fall_back(monkeypatch):
+    monkeypatch.delenv("VYBEX_NO_AUTHOR")
+    an, sp, st = run(dict(GOOD, trim={"from": 0, "to": 0}))  # 3.5 s < min_len
+    assert "no trim" in st and an is AN
+    for bad in ("not json", {"widgets": [{"lines": [99], "kind": "pair"}]}):
+        an, sp, st = run(bad)
+        assert st.startswith("fallback") and sp is SPEC and an is AN
+    def boom(p, c):
+        raise RuntimeError("no token")
+    assert author.author(ENTRY, AN, SPEC, CFG, runner=boom)[2].startswith("fallback")

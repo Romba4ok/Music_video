@@ -36,4 +36,4 @@ python -m venv .venv  &&  .venv/Scripts/python -m pip install -r requirements.tx
 ```
 
 ## Не реализовано пока
-Публикация (`publish`), пополнение очереди, сбор метрик своего аккаунта в цикл. Проверено локально: whisper на реальных песнях, рендер двух роликов. Не проверено: workflow на Actions с новым шаблоном (время рендера и whisper на CI неизвестно). Карточки под смысл песни пока пишутся вручную в `spec-N.json → widgets`, без Claude работает только автоподбор по ключевым словам (`render_widgets.AUTO`). Папку `audio/` и любые mp3 в git не кладём (`.gitignore`).
+Публикация (`publish`), пополнение очереди, сбор метрик своего аккаунта в цикл. Проверено локально: whisper на реальных песнях, рендер двух роликов. Не проверено: workflow на Actions с новым шаблоном (время рендера и whisper на CI неизвестно). Карточки под смысл песни пишет шаг Claude (`pipeline/author.py`, секрет `CLAUDE_CODE_OAUTH_TOKEN`, `docs/claude-author.md`); без него работает автоподбор по ключевым словам (`render_widgets.AUTO`). Папку `audio/` и любые mp3 в git не кладём (`.gitignore`).

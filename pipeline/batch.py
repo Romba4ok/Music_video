@@ -12,6 +12,7 @@ import zlib
 from pathlib import Path
 
 from . import analyze as analyze_mod
+from . import author as author_mod
 from . import build, download, sources
 from .common import ROOT, load_config, parse_name
 from .qa import METAPHORS, PALETTES
@@ -118,7 +119,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     cfg = dict(cfg or load_config())
     if lang:
         cfg["language"] = lang
-    st = {"fetch": fetch_audio, "analyze": analyze_mod.analyze, "build": build.build_one}
+    st = {"fetch": fetch_audio, "analyze": analyze_mod.analyze, "build": build.build_one, "author": author_mod.author}
     st.update(stages or {})
     acc = root / "accounts" / "main"
     queue = parse_queue((acc / "queue.md").read_text(encoding="utf-8")) if (acc / "queue.md").exists() else []
@@ -145,13 +146,15 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             rec["stages"]["fetch"] = "ok"
             rec["audio_name"] = Path(audio).name
             analysis = st["analyze"](audio, entry["popular_line"], cfg)
-            (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             rec["stages"]["analyze"] = "ok" if analysis.get("fragment") else "no_fragment"
             if not analysis.get("fragment"):
+                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
                 report.append(rec)
                 continue
             rel = str(Path(audio).resolve().relative_to(root)).replace("\\", "/") if mode == "auto" else None
             spec = autospec(entry, n, date, recent, cfg, mode, rel, trend_tags)
+            analysis, spec, rec["stages"]["author"] = st["author"](entry, analysis, spec, cfg)  # Claude writes cards/hook; falls back to auto
+            (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
             sid, lines, video = st["build"](out, n, cfg)
             rec["stages"]["render"] = "ok" if video else "FAIL"

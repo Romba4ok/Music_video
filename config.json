@@ -20,5 +20,6 @@
     "order": ["local", "openverse", "jamendo"],
     "ytdlp_allowed_domains": ["youtube.com", "youtu.be", "archive.org"]
   },
-  "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"}
+  "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},
+  "author": {"enabled": true, "model": "sonnet", "timeout": 240}
 }
