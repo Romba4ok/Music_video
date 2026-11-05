@@ -195,6 +195,9 @@ def test_parse_name_handles_site_filenames():
     assert parse_name("Basta_-_Moya_igra_2_79894643") == ("Basta", "Moya igra 2")
     assert parse_name("Баста_8800") == ("", "Баста")
     assert parse_name("Max Korzh - Сердце пацана") == ("Max Korzh", "Сердце пацана")
+    assert parse_name("Баста - 8800") == ("Баста", "8800")  # after the dash the title may be anything, even 4+ digits
+    assert parse_name("Баста - Моя игра - live") == ("Баста", "Моя игра - live")
+    assert parse_name("Баста — Моя игра") == ("Баста", "Моя игра")
 
 
 def test_short_audio_is_padded_to_requested_length(tmp_path):

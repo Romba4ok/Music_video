@@ -75,6 +75,7 @@ def pack(out, n, spec, mode, ready):
     (ready / f"{base} caption.txt").write_text(text, encoding="utf-8")
     if (out / f"sync-{n}.txt").exists():
         shutil.copy2(out / f"sync-{n}.txt", ready / f"{base} sync.txt")
+    return base  # report.json keeps it so the Buffer step finds the mp4 and caption.txt
 
 
 def _pick(order, banned, key):
@@ -160,7 +161,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             rec["stages"]["render"] = "ok" if video else "FAIL"
             rec["qa"] = [f"{s} {nm} {d}".strip() for s, nm, d in lines if s != "PASS"]
             if video:
-                pack(out, n, spec, mode, out / "ready")
+                rec["ready"] = pack(out, n, spec, mode, out / "ready")
                 done += 1
                 recent.append((spec["metaphor"], spec["palette"]))
         except Exception as e:  # one song must never stop the batch

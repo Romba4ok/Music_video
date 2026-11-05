@@ -7,6 +7,7 @@ USAGE = """stages:
   analyze <audio> [--popular "line"] [--lang ru] -o analysis.json
   render out/<date> [--only N]   (= pipeline.build)
   batch --mode auto|tiktok --count 3 [--date D] [--lang ru]
+  buffer setup | publish out/<date>   send ready videos to the Buffer TikTok queue (docs/buffer.md)
   trends                          TikTok trends from official/permitted data
 """
 
@@ -47,6 +48,9 @@ def main(argv):
     if cmd == "batch":
         from . import batch
         return batch.main(rest)
+    if cmd == "buffer":
+        from . import buffer_publisher
+        return buffer_publisher.main(rest)
     if cmd == "trends":
         from . import tiktok_trends
         print(json.dumps(tiktok_trends.fetch_trends(), ensure_ascii=False, indent=1))

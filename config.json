@@ -21,5 +21,6 @@
     "ytdlp_allowed_domains": ["youtube.com", "youtu.be", "archive.org"]
   },
   "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},
-  "author": {"enabled": true, "model": "sonnet", "timeout": 240}
+  "author": {"enabled": true, "model": "sonnet", "timeout": 240},
+  "buffer": {"mode": "draft", "channel_id": "", "keep_days": 7, "max_mb": 100}
 }

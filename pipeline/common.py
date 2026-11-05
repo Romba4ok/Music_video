@@ -68,9 +68,12 @@ def get_json(url, params=None, headers=None, timeout=20, retries=2):
 
 
 def parse_name(stem):
-    """'Basta_-_Moya_igra_2_79894643' / 'Artist - Title' -> (artist, title); site ids (4+ trailing digits) and underscores dropped."""
+    """'Artist - Title' -> (artist, title): everything before the first dash is the artist, everything after is the title (may be anything,
+    even '8800'). 'Basta_-_Moya_igra_2_79894643' -> a site id (4+ trailing digits) after the dash is dropped. No dash -> ('', whole name)."""
     import re
     t = re.sub(r"\s+", " ", stem.replace("_", " ")).strip()
-    t = re.sub(r"\s+\d{4,}$", "", t) or t
-    artist, sep, title = t.partition(" - ")
-    return (artist.strip(), title.strip()) if sep and title.strip() else ("", t)
+    parts = re.split(r"\s[-–—]\s", t, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        title = parts[1].strip()
+        return parts[0].strip(), re.sub(r"\s+\d{4,}$", "", title) or title  # the title alone is never stripped to nothing: '8800' stays
+    return "", re.sub(r"\s+\d{4,}$", "", t) or t

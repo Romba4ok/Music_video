@@ -66,6 +66,22 @@ jobs:
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'auto' }}" --count "${{ github.event.inputs.count || '3' }}" --date "$(date -u +%F)"
+      - name: Buffer - send ready videos to the TikTok queue (draft until repo variable VYBEX_BUFFER=queue)
+        if: always()
+        continue-on-error: true   # a failed hand-over never loses the mp4: it stays in out/ and is copied to Drive below
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+          CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+          VYBEX_BUFFER: ${{ vars.VYBEX_BUFFER || 'draft' }}
+        run: |
+          D=$(date -u +%F)
+          [ -f out/$D/report.json ] || { echo "no report: nothing to send"; exit 0; }
+          rclone copyto gd:state/buffer.json out/buffer-state.json 2>/dev/null || echo "no buffer state yet (fine)"
+          python -m pipeline buffer publish out/$D --state out/buffer-state.json || echo "buffer step reported errors (see report.json)"
+          [ -f out/buffer-state.json ] && rclone copyto out/buffer-state.json gd:state/buffer.json
+          exit 0
       - name: Push results to Drive and mark songs done
         if: always()
         run: |
@@ -76,4 +92,5 @@ jobs:
             [ -n "$f" ] && rclone moveto "gd:audio/$f" "gd:done/$f"
           done
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
+          [ -f out/$D/report.json ] && jq -r '"- buffer: \(.buffer.state // "n/a") \(.buffer.detail // "")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
           echo "Results: Drive/ready/$D. AI label: turn on 'AI-generated content' in TikTok when posting." >> "$GITHUB_STEP_SUMMARY"
