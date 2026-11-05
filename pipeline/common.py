@@ -65,3 +65,12 @@ def get_json(url, params=None, headers=None, timeout=20, retries=2):
         except requests.RequestException as e:
             last = e
     raise last
+
+
+def parse_name(stem):
+    """'Basta_-_Moya_igra_2_79894643' / 'Artist - Title' -> (artist, title); site ids (4+ trailing digits) and underscores dropped."""
+    import re
+    t = re.sub(r"\s+", " ", stem.replace("_", " ")).strip()
+    t = re.sub(r"\s+\d{4,}$", "", t) or t
+    artist, sep, title = t.partition(" - ")
+    return (artist.strip(), title.strip()) if sep and title.strip() else ("", t)

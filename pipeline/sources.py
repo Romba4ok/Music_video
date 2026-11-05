@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import asdict, dataclass
 
-from .common import ROOT, NeedsAuth, get_json, license_ok, load_config, safe_err, status
+from .common import ROOT, NeedsAuth, get_json, parse_name, license_ok, load_config, safe_err, status
 
 
 @dataclass
@@ -42,9 +42,9 @@ def _local(q, n, cfg, env):
             continue
         if words and not all(w in f.stem.lower() for w in words):
             continue
-        artist, _, title = f.stem.partition(" - ")
+        artist, title = parse_name(f.stem)
         lic = meta.get(f.name, {}).get("license", "owner-supplied")
-        out.append(Candidate("local", title or f.stem, artist if title else "", license=lic, local_path=str(f),
+        out.append(Candidate("local", title, artist, license=lic, local_path=str(f),
                              rights_declared=f.name in meta))
     return out[:n]
 

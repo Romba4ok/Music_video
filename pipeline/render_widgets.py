@@ -72,6 +72,11 @@ def _art(key, uid):
             )
 
 
+def _clip(text, n):
+    """Hard-truncate with an ellipsis: the layout check rejects CSS-clipped text, so text must fit by construction."""
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+
+
 def _pick(text, idx):
     t = text.lower()
     for k, (key, *_rest) in enumerate(ARTS):
@@ -101,16 +106,17 @@ def build_html(plan, spec, cfg):
     clips = []
     # --- intro: big title word, ring, handle
     if intro >= 0.6:
-        head = html.escape(title.upper())
-        sub = html.escape(artist)
+        head = html.escape(_clip(title, 40).upper())
+        sub = html.escape(_clip(artist, 40))
         ring = f'<svg id="ring" viewBox="0 0 400 400" style="position:absolute;left:340px;top:360px;width:400px;height:400px"><circle cx="200" cy="200" r="180" fill="none" stroke="{acc}" stroke-width="5" stroke-dasharray="3 22" stroke-linecap="round" opacity=".5"/></svg>'
+        fs = max(72, min(150, int(900 / (0.8 * max(len(title), 1)))))
         clips.append(
             f'<div id="clipIntro" class="clip" data-start="0" data-duration="{intro}" data-track-index="2" style="left:0;top:0;width:{w}px;height:{hgt}px">'
             f'<div id="intro" style="position:absolute;inset:0">{ring}'
-            f'<div class="ititle" style="position:absolute;left:60px;top:500px;width:960px">{head}</div>'
-            f'<div class="isub" style="position:absolute;left:60px;top:{500 + 130}px;width:960px">{sub}</div>'
-            + (f'<div class="ihandle" style="position:absolute;left:60px;top:{500 + 200}px;width:960px">{html.escape(handle)}</div>' if handle else "")
-            + '</div></div>')
+            f'<div style="position:absolute;left:60px;top:470px;width:960px;display:flex;flex-direction:column;gap:22px">'
+            f'<div class="ititle" style="font-size:{fs}px">{head}</div><div class="isub">{sub}</div>'
+            + (f'<div class="ihandle">{html.escape(handle)}</div>' if handle else "")
+            + '</div></div></div>')
         js.append(f'tl.fromTo("#intro",{{opacity:0,scale:.9}},{{opacity:1,scale:1,duration:.4,ease:"back.out(1.6)"}},0);')
         js.append(f'tl.to("#ring",{{rotation:120,duration:{intro},ease:"none",transformOrigin:"50% 50%"}},0);')
         js.append(f'tl.to("#intro",{{opacity:0,scale:1.06,duration:.25,ease:"power2.in"}},{max(.3, round(intro - .27, 3))});')
@@ -122,9 +128,9 @@ def build_html(plan, spec, cfg):
         f'<div id="chrome" style="position:absolute;inset:0">'
         f'<div class="stat" style="left:110px;top:196px">19:47</div><div class="batt" style="left:880px;top:204px"></div>'
         f'<div class="island"><div class="ico"><svg viewBox="0 0 24 24" width="30" height="30"><path d="M9 18V6l10-2v12" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="7" cy="18" r="3" fill="#fff"/><circle cx="17" cy="16" r="3" fill="#fff"/></svg></div>'
-        f'<div class="itxt"><b>{html.escape(title)}</b><span>{html.escape(artist)}</span></div><div class="eqs">{bars}</div></div>'
+        f'<div class="itxt"><b>{html.escape(_clip(title, 17))}</b><span>{html.escape(_clip(artist, 22))}</span></div><div class="eqs">{bars}</div></div>'
         + (f'<div class="chip"><i></i>{html.escape(handle)}</div>' if handle else "")
-        + f'<div class="ptitle">{html.escape((artist + " - " if artist else "") + title)}</div>'
+        + f'<div class="ptitle">{html.escape(_clip((artist + " - " if artist else "") + title, 32))}</div>'
         f'<div class="track"><div id="fill"></div></div><div id="tl" class="tm" style="left:160px">0:00</div><div id="tr" class="tm" style="right:160px">-0:00</div>'
         '</div></div>')
     js.append(f'tl.fromTo("#chrome",{{opacity:0}},{{opacity:1,duration:.4}},{intro});')
@@ -151,7 +157,7 @@ def build_html(plan, spec, cfg):
         clips.append(
             f'<div id="clip{i}" class="clip" data-start="{s["start"]}" data-duration="{d}" data-track-index="3" style="left:90px;top:330px;width:900px;height:800px">'
             f'<div id="card{i}" class="wcard"><div class="head"><span class="app" style="background:{icol}"></span><b>{html.escape(app_title)}</b></div>'
-            f'<div class="lyric">{sub}</div><svg id="art{i}" class="art" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice">{_art(key, i)}</svg></div>'
+            f'<div class="lyric" style="font-size:{44 if len(s["text"]) <= 50 else 38 if len(s["text"]) <= 75 else 32}px">{sub}</div><svg id="art{i}" class="art" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice">{_art(key, i)}</svg></div>'
             f'<div class="dots">{dots}</div></div>')
         js.append(f'tl.fromTo("#clip{i}",{{opacity:0,x:70}},{{opacity:1,x:0,duration:.3,ease:"power3.out"}},{s["start"]});')
         js.append(f'tl.to("#clip{i}",{{opacity:0,x:-70,duration:.2,ease:"power2.in"}},{max(round(s["start"] + .31, 3), round(s["end"] - .22, 3))});')
@@ -183,7 +189,7 @@ html,body{{margin:0;background:{b1};}}
  background:linear-gradient(160deg,{b1},{b2} 55%,{b3});}}
 .sp{{position:absolute;opacity:.7}}
 .clip{{position:absolute}}
-.ititle{{text-align:center;font-weight:900;font-size:150px;line-height:1;letter-spacing:-2px;
+.ititle{{text-align:center;font-weight:900;line-height:1.05;letter-spacing:-2px;overflow-wrap:anywhere;
  background:linear-gradient(90deg,{ta},{tb});-webkit-background-clip:text;background-clip:text;color:transparent;}}
 .isub{{text-align:center;font-weight:700;font-size:44px;color:#9a8fb5}}
 .ihandle{{text-align:center;font-weight:800;font-size:52px;color:#1a1a2e}}
@@ -192,8 +198,8 @@ html,body{{margin:0;background:{b1};}}
 .island{{position:absolute;left:260px;top:178px;width:560px;height:96px;border-radius:48px;background:#0b0b10;display:flex;align-items:center;gap:16px;padding:0 24px 0 20px;box-sizing:border-box}}
 .ico{{width:60px;height:60px;border-radius:14px;background:#2a2a38;display:flex;align-items:center;justify-content:center;flex:none}}
 .itxt{{display:flex;flex-direction:column;flex:1;min-width:0}}
-.itxt b{{color:#fff;font-size:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-.itxt span{{color:#9a9ab0;font-size:21px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.itxt b{{color:#fff;font-size:28px;white-space:nowrap}}
+.itxt span{{color:#9a9ab0;font-size:21px;font-weight:600;white-space:nowrap}}
 .eqs{{position:relative;width:44px;height:44px;flex:none}}
 .eq{{position:absolute;bottom:0;width:8px;height:44px;border-radius:4px;background:{ta};transform-origin:50% 100%}}
 .wcard{{position:absolute;left:0;top:0;width:900px;height:740px;box-sizing:border-box;padding:38px 40px;border-radius:60px;background:rgba(255,255,255,.94);
@@ -209,7 +215,7 @@ html,body{{margin:0;background:{b1};}}
 .chip{{position:absolute;left:400px;top:1136px;width:280px;height:60px;border-radius:30px;background:rgba(255,255,255,.9);
  display:flex;align-items:center;justify-content:center;gap:12px;font-size:30px;font-weight:800;color:#14141f;box-shadow:0 8px 24px rgba(90,70,160,.15)}}
 .chip i{{width:30px;height:30px;border-radius:15px;background:linear-gradient(135deg,{ta},{tb});display:block}}
-.ptitle{{position:absolute;left:60px;top:1215px;width:960px;text-align:center;font-weight:800;font-size:44px;color:#14141f}}
+.ptitle{{position:absolute;left:60px;top:1215px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:#14141f}}
 .track{{position:absolute;left:160px;top:1292px;width:760px;height:8px;border-radius:4px;background:rgba(20,20,31,.15)}}
 #fill{{height:8px;border-radius:4px;background:linear-gradient(90deg,{ta},{tb})}}
 .tm{{position:absolute;top:1312px;font-size:26px;font-weight:700;color:#6b6585}}

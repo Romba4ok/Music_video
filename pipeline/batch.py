@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import analyze as analyze_mod
 from . import build, download, sources
-from .common import ROOT, load_config
+from .common import ROOT, load_config, parse_name
 from .qa import METAPHORS, PALETTES
 
 METAPHOR_ORDER = ["inner", "loneliness", "breakup", "love", "nostalgia", "time", "money"]
@@ -57,8 +57,8 @@ def queue_from_audio(ad, queue):
         if any(e["audio_file"] == f.name or all(w in stem for w in re.split(r"\W+", f"{e['artist']} {e['title']}".lower()) if w)
                for e in queue):
             continue
-        artist, sep, title = f.stem.partition(" - ")
-        out.append({"artist": artist if sep else "", "title": title if sep else f.stem, "popular_line": "", "audio_file": f.name})
+        artist, title = parse_name(f.stem)
+        out.append({"artist": artist, "title": title, "popular_line": "", "audio_file": f.name})
     return out
 
 

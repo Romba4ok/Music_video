@@ -126,13 +126,19 @@ def check(workdir):
         data = json.loads(out[out.index("{"):])
     except Exception:
         return False, ["check output unreadable: " + out[-300:]]
-    errs = [f'{f.get("code")}: {f.get("message")} Fix: {f.get("fixHint")}'[:400]
-            for f in (data.get("lint") or {}).get("findings", []) if f.get("severity") == "error"]
-    return bool(data.get("ok")) and not errs, errs or ([] if data.get("ok") else ["check reported ok=false"])
+    errs = []
+    for sec in ("lint", "runtime", "layout", "motion", "contrast", "craft", "audio"):
+        for f in (data.get(sec) or {}).get("findings", []):
+            if f.get("severity") == "error":
+                errs.append(f'{sec}:{f.get("code")}: {f.get("message")} Fix: {f.get("fixHint")}'[:300])
+    if not errs and not data.get("ok"):
+        bad = [k for k, v in data.items() if isinstance(v, dict) and v.get("ok") is False]
+        errs = ["check ok=false in: " + ",".join(bad) + " " + json.dumps({k: data[k] for k in bad}, ensure_ascii=False)[:500]]
+    return not errs and bool(data.get("ok")), errs
 
 
 def make_audio(src, start, length, out, cfg, fade=1.5):
-    af = f"afade=t=out:st={max(0, length - fade):.2f}:d={fade},loudnorm=I={cfg['target_lufs']}:TP={cfg['max_true_peak']}:LRA=11"
+    af = f"apad=whole_dur={length},afade=t=out:st={max(0, length - fade):.2f}:d={fade},loudnorm=I={cfg['target_lufs']}:TP={cfg['max_true_peak']}:LRA=11"
     rc, log = _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start}", "-t", f"{length}", "-i", str(src), "-vn", "-af", af,
                     "-ar", "48000", "-c:a", "aac", "-b:a", "192k", str(out)])
     if rc:

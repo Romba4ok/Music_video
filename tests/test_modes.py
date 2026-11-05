@@ -188,3 +188,20 @@ def test_intro_shifts_scenes_and_audio_start():
     assert p1["scenes"][0]["start"] == round(p0["scenes"][0]["start"] + 1.6, 3)
     page = render_widgets.build_html(p1, {"song": {"artist": "A", "title": "T"}, "palette": "dusk"}, cfg)
     assert 'id="clipIntro"' in page and 'data-composition-id="main"' in page
+
+
+def test_parse_name_handles_site_filenames():
+    from pipeline.common import parse_name
+    assert parse_name("Basta_-_Moya_igra_2_79894643") == ("Basta", "Moya igra 2")
+    assert parse_name("Баста_8800") == ("", "Баста")
+    assert parse_name("Max Korzh - Сердце пацана") == ("Max Korzh", "Сердце пацана")
+
+
+def test_short_audio_is_padded_to_requested_length(tmp_path):
+    import subprocess
+    from pipeline import render
+    src = tmp_path / "s.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=3", str(src)], check=True)
+    out = tmp_path / "o.m4a"
+    render.make_audio(src, 0, 6, out, load_config())
+    assert abs(float(qa.probe(out)["format"]["duration"]) - 6) < 0.3
