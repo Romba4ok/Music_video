@@ -512,8 +512,8 @@ def build_html(plan, spec, cfg):
                 tsh += 2.2
             js.append(f'tl.fromTo("#bd{i}",{{y:0}},{{y:5,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(s["start"] + .5, 3)});')
             for bi, t in enumerate(grid[:300]):  # the whole card sways in 3D on every beat, harder on downbeats
-                if s["start"] + .5 <= t < s["end"] - .1:
-                    k, sg = (1.8 if bi % 4 == 0 else 1.0), (1 if bi % 2 == 0 else -1)
+                if s["start"] + .5 <= t < s["end"] - .1 and bi % 4 == 0:  # only downbeats: every beat made the card twitch
+                    k, sg = .85, (1 if (bi // 4) % 2 == 0 else -1)
                     js.append(f'tl.fromTo("#ap{i}",{{scale:1.25,rotation:{-10 * sg}}},{{scale:1,rotation:0,duration:.3,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
                     js.append(f'tl.fromTo("#dn{i}",{{scaleX:1.5}},{{scaleX:1,duration:.3,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
                     js.append(f'tl.fromTo("#card{i}",{{rotation:{round(1.1 * k * sg, 2)},rotationY:{round(5 * k * sg, 2)},scale:{round(1 + .022 * k, 3)},transformPerspective:900,immediateRender:false}},'
