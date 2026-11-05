@@ -13,7 +13,7 @@ def split_words(words, max_words=8):
     return [words[i:i + size] for i in range(0, len(words), size)]
 
 
-def build_scenes(analysis, song, cfg):
+def build_scenes(analysis, song, cfg, intro=0.0):
     frag = analysis["fragment"]
     t0 = frag["start"]
     length = frag["end"] - t0
@@ -36,4 +36,13 @@ def build_scenes(analysis, song, cfg):
     outro_start = round(max(cards[-1]["end"] + 0.1, length + 0.3), 3)
     outro = {"role": "outro", "text": f'{song["artist"]} — {song["title"]}', "start": outro_start, "end": duration, "words": []}
     beats = [round(b - t0, 3) for b in analysis.get("beats", []) if t0 <= b < t0 + length]
-    return {"duration": duration, "scenes": cards + [outro], "beats": beats, "audio_start": t0, "audio_len": duration}
+    scenes = cards + [outro]
+    intro = round(min(intro, t0), 3)  # intro plays over the song's lead-in: audio starts `intro` earlier, everything else shifts
+    if intro:
+        for sc in scenes:
+            sc["start"], sc["end"] = round(sc["start"] + intro, 3), round(sc["end"] + intro, 3)
+            for w in sc["words"]:
+                w["s"], w["e"] = round(w["s"] + intro, 3), round(w["e"] + intro, 3)
+        beats = [round(b + intro, 3) for b in beats]
+    return {"duration": round(duration + intro, 2), "scenes": scenes, "beats": beats, "audio_start": round(t0 - intro, 3),
+            "audio_len": round(duration + intro, 2), "intro": intro}

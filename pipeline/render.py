@@ -143,8 +143,12 @@ def render(spec, plan, workdir, cfg, audio_src=None):
     """plan = script_gen.build_scenes output (or commentary equivalent). Returns path to final mp4."""
     wd = Path(workdir).resolve()  # absolute: the CLI runs with cwd=wd, relative -o paths would nest
     wd.mkdir(parents=True, exist_ok=True)
-    (wd / "index.html").write_text(build_html(plan["scenes"], plan.get("beats", []), spec["palette"], spec["metaphor"],
-                                              plan["duration"], cfg), encoding="utf-8")
+    if cfg.get("style") == "widgets":
+        from . import render_widgets
+        page = render_widgets.build_html(plan, spec, cfg)
+    else:
+        page = build_html(plan["scenes"], plan.get("beats", []), spec["palette"], spec["metaphor"], plan["duration"], cfg)
+    (wd / "index.html").write_text(page, encoding="utf-8")
     ok, errs = check(wd)
     if not ok:
         raise RuntimeError("hyperframes check failed: " + "; ".join(errs)[:600])

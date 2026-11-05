@@ -3,6 +3,9 @@
 Автоматический конвейер: песня → анализ текста и битов → вертикальное видео (HyperFrames) → QA → публикация (официальный API TikTok).
 Правила для Claude: `CLAUDE.md`. Права и источники: `docs/rights.md`.
 
+## Шаблон
+`config.json: style` = `widgets` (по умолчанию): заставка с названием, «Dynamic Island» с плеером, строка песни как виджет-уведомление с иллюстрацией (закат, карта, пульс, часы, погода, ночь), прогресс-бар. `handle` в config — ваш @ник на заставке и в плеере. `cards` — старый текстовый стиль. Код: `pipeline/render_widgets.py`.
+
 ## Два режима
 - **AUTO** (`with_audio`): звук из разрешённого источника (CC0/CC-BY или ваш файл) вшивается в mp4. `python -m pipeline batch --mode auto --count 3`
 - **TIKTOK** (`tiktok`): mp4 без звука, тайминг под песню + `sync-N.txt` («поставьте звук с 1:02.40»); официальный звук добавляете в приложении TikTok. `python -m pipeline batch --mode tiktok --count 3`

@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         description: auto (mp4 with sound) or tiktok (silent mp4 + sync file)
-        default: tiktok
+        default: auto
       count:
         description: how many videos
         default: "3"
@@ -56,7 +56,7 @@ jobs:
         id: batch
         env:
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
-        run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'tiktok' }}" --count "${{ github.event.inputs.count || '3' }}" --date "$(date -u +%F)"
+        run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'auto' }}" --count "${{ github.event.inputs.count || '3' }}" --date "$(date -u +%F)"
       - name: Push results to Drive and mark songs done
         if: always()
         run: |
