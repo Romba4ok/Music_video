@@ -1,9 +1,8 @@
 name: generate
 # Google Drive in/out. UNTESTED on GitHub Actions (cannot be run locally): first run via "Run workflow", read the log, then rely on cron.
 # Drive folder (its ID = secret GDRIVE_FOLDER_ID):  audio/ (you drop songs)  ready/<date>/ (results)  done/ (processed songs)  queue.txt (optional)
+# No "push" trigger: a code push must never generate videos or put posts into the TikTok queue.
 on:
-  push:
-    branches: [master]
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
@@ -12,8 +11,11 @@ on:
         description: auto (mp4 with sound) or tiktok (silent mp4 + sync file)
         default: auto
       count:
-        description: how many videos
-        default: "3"
+        description: how many videos (scheduled runs use repo variable VYBEX_POSTS_PER_DAY, default 3)
+        default: ""
+      buffer:
+        description: "Buffer mode for this run only: plan (checks, creates nothing) | draft | queue | off. Empty = repo variable VYBEX_BUFFER, else draft"
+        default: ""
 env:
   HYPERFRAMES_NO_UPDATE_CHECK: "1"
   HYPERFRAMES_SKIP_SKILLS: "1"
@@ -65,23 +67,32 @@ jobs:
         env:
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'auto' }}" --count "${{ github.event.inputs.count || '3' }}" --date "$(date -u +%F)"
-      - name: Buffer - send ready videos to the TikTok queue (draft until repo variable VYBEX_BUFFER=queue)
+        run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'auto' }}" --count "${{ github.event.inputs.count || vars.VYBEX_POSTS_PER_DAY || '3' }}" --date "$(date -u +%F)"
+      - name: "Buffer - 3 posts a day into the TikTok queue (mode = input, else variable VYBEX_BUFFER, else draft)"
         if: always()
-        continue-on-error: true   # a failed hand-over never loses the mp4: it stays in out/ and is copied to Drive below
+        shell: bash   # bash -e -o pipefail: a failed rclone/python must stop the step, nothing is swallowed
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
           CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
           CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
-          VYBEX_BUFFER: ${{ vars.VYBEX_BUFFER || 'draft' }}
+          VYBEX_BUFFER: ${{ github.event.inputs.buffer || vars.VYBEX_BUFFER || 'draft' }}
+          VYBEX_POSTS_PER_DAY: ${{ vars.VYBEX_POSTS_PER_DAY || '3' }}
+          VYBEX_TIMEZONE: ${{ vars.VYBEX_TIMEZONE || 'Asia/Almaty' }}
         run: |
           D=$(date -u +%F)
-          [ -f out/$D/report.json ] || { echo "no report: nothing to send"; exit 0; }
-          rclone copyto gd:state/buffer.json out/buffer-state.json 2>/dev/null || echo "no buffer state yet (fine)"
-          python -m pipeline buffer publish out/$D --state out/buffer-state.json || echo "buffer step reported errors (see report.json)"
-          [ -f out/buffer-state.json ] && rclone copyto out/buffer-state.json gd:state/buffer.json
-          exit 0
+          if [ ! -f out/$D/report.json ]; then echo "no report.json (the Batch step failed or did not run): nothing to send"; exit 0; fi
+          # state lives in Drive/state/buffer.json; "first run" is accepted only when the folder/file really is absent, a Drive error stops the step
+          ROOT_LS=$(rclone lsf gd:)
+          if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'buffer.json'; then
+            rclone copyto gd:state/buffer.json out/buffer-state.json
+          else
+            echo "no buffer state yet (first run)"
+          fi
+          rc=0
+          python -m pipeline buffer publish out/$D --state out/buffer-state.json || rc=$?
+          if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json; fi   # saved even when something failed
+          exit $rc
       - name: Push results to Drive and mark songs done
         if: always()
         run: |
@@ -92,5 +103,5 @@ jobs:
             [ -n "$f" ] && rclone moveto "gd:audio/$f" "gd:done/$f"
           done
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
-          [ -f out/$D/report.json ] && jq -r '"- buffer: \(.buffer.state // "n/a") \(.buffer.detail // "")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
+          [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
           echo "Results: Drive/ready/$D. AI label: turn on 'AI-generated content' in TikTok when posting." >> "$GITHUB_STEP_SUMMARY"

@@ -1,26 +1,43 @@
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
+import requests
 
 from pipeline import buffer_publisher as bp
 
+ALM = ZoneInfo("Asia/Almaty")
+NOW = datetime(2026, 11, 20, 5, 0, tzinfo=timezone.utc)  # 10:00 in Almaty
 CFG = {"buffer": {"mode": "draft", "channel_id": "CH1", "keep_days": 7, "max_mb": 100}}
-ENV = {}
+ENV = {"VYBEX_OWNER_DECLARES_RIGHTS": "1", "VYBEX_TIMEZONE": "Asia/Almaty"}
+QUEUE = dict(ENV, VYBEX_BUFFER="queue")
+ORIG_CHECK_URL = bp.check_url
 
 
 class FakeBuf:
-    def __init__(self, fail=None):
-        self.calls, self.fail = [], fail
-
-    def create_post(self, channel, text, url, mode):
-        if self.fail:
-            raise bp.BufferError(self.fail)
-        self.calls.append((channel, text, url, mode))
-        return f"post{len(self.calls)}"
+    def __init__(self, scheduled=(), fail=None, statuses=None, paused=False):
+        self.calls, self.fail, self.sched, self.statuses, self.paused = [], fail, list(scheduled), statuses or {}, paused
 
     def tiktok_channels(self):
-        return [{"id": "CH9", "name": "vybex.mp44", "org": "O", "paused": False}]
+        return [{"id": "CH1", "name": "vybex.mp44", "org": "O", "paused": self.paused, "disconnected": False, "locked": False,
+                 "timezone": "Europe/London"}]
+
+    def scheduled(self, org, channel):
+        return self.sched
+
+    def post_status(self, post_id):
+        s = self.statuses.get(post_id, {"status": "scheduled"})
+        if isinstance(s, Exception):
+            raise s
+        return s
+
+    def create_post(self, channel, text, url, mode, due=None, notify=False):
+        if self.fail:
+            raise self.fail
+        self.calls.append({"text": text, "url": url, "mode": mode, "due": due, "notify": notify})
+        return f"post{len(self.calls)}"
 
 
 class FakeStore:
@@ -37,21 +54,23 @@ class FakeStore:
 
 
 @pytest.fixture(autouse=True)
-def url_ok(monkeypatch):
+def stubs(monkeypatch):
     monkeypatch.setattr(bp, "check_url", lambda url, size, get=None: None)
+    monkeypatch.setattr(bp, "check_media", lambda p, audio, b: {"duration": 30.0, "audio": audio})
 
 
-def make_out(tmp_path, n=2, same=False):
+def make_out(tmp_path, n=2, mode="auto", sources=None):
     out = tmp_path / "out"
     (out / "ready").mkdir(parents=True)
     songs = []
     for i in range(1, n + 1):
         name = f"{i} Баста - Песня {i}"
-        (out / "ready" / f"{name}.mp4").write_bytes(b"video" + (b"" if same else str(i).encode()))
-        (out / "ready" / f"{name} caption.txt").write_text("Подпись. Сделано с ИИ\n#a #b\n\nВключите в TikTok метку «Создано ИИ».", encoding="utf-8")
-        songs.append({"song": name, "ready": name, "stages": {"render": "ok"}})
+        (out / "ready" / f"{name}.mp4").write_bytes(b"video" + str(i).encode())
+        (out / "ready" / f"{name} caption.txt").write_text(f"Подпись {i}. Сделано с ИИ\n#a #b\n\nВключите в TikTok метку «Создано ИИ».", encoding="utf-8")
+        songs.append({"song": name, "ready": name, "stages": {"render": "ok"},
+                      "sources": sources or [{"source": "local", "state": "ok", "detail": "x.mp3"}]})
     songs.append({"song": "failed", "stages": {"render": "FAIL"}})  # never sent
-    (out / "report.json").write_text(json.dumps({"songs": songs}), encoding="utf-8")
+    (out / "report.json").write_text(json.dumps({"mode": mode, "songs": songs}), encoding="utf-8")
     return out
 
 
@@ -59,11 +78,22 @@ def report(out):
     return json.loads((out / "report.json").read_text(encoding="utf-8"))
 
 
+def run(out, tmp_path, env=ENV, buf=None, store=None, now=NOW, cfg=CFG):
+    return bp.publish_dir(out, cfg, tmp_path / "s.json", env, buf or FakeBuf(), store or FakeStore(), now)
+
+
+def local(dt):
+    return dt.astimezone(ALM).strftime("%Y-%m-%d %H:%M")
+
+
+# ---------- modes, caption ----------
+
 def test_draft_is_default_and_typo_never_publishes():
     assert bp.mode_of({}, {}) == "off"
     assert bp.mode_of(CFG, {}) == "draft"
     assert bp.mode_of(CFG, {"VYBEX_BUFFER": "qeue"}) == "off"
     assert bp.mode_of(CFG, {"VYBEX_BUFFER": "QUEUE"}) == "queue"
+    assert bp.mode_of(CFG, {"VYBEX_BUFFER": "plan"}) == "plan"
 
 
 def test_caption_drops_ai_reminder_and_is_cut():
@@ -71,53 +101,281 @@ def test_caption_drops_ai_reminder_and_is_cut():
     assert len(bp.caption_for("x" * 5000)) == 2200
 
 
-def test_sends_only_rendered_videos_in_draft(tmp_path):
-    out, buf, st = make_out(tmp_path), FakeBuf(), FakeStore()
-    res = bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, buf, st)
+# ---------- schedule ----------
+
+def test_three_videos_take_the_three_daily_slots():
+    tz, hm = bp.slot_config({}, ENV)
+    got = bp.free_slots(4, [], tz, hm, NOW)
+    assert [local(d) for d in got] == ["2026-11-20 12:00", "2026-11-20 17:00", "2026-11-20 21:00", "2026-11-21 12:00"]
+
+
+def test_taken_slots_and_full_days_are_skipped():
+    tz, hm = bp.slot_config({}, ENV)
+    at = lambda d, h: datetime(2026, 11, d, h, 0, tzinfo=ALM).astimezone(timezone.utc)
+    assert local(bp.free_slots(1, [at(20, 12)], tz, hm, NOW)[0]) == "2026-11-20 17:00"
+    full = [at(20, 12), at(20, 17), at(20, 21)]
+    assert local(bp.free_slots(1, full, tz, hm, NOW)[0]) == "2026-11-21 12:00"
+    manual = [at(20, 14), at(20, 15), at(20, 16)]  # three posts at odd times also fill the day (3 per day)
+    assert local(bp.free_slots(1, manual, tz, hm, NOW)[0]) == "2026-11-21 12:00"
+
+
+def test_past_slots_and_near_future_are_not_used():
+    tz, hm = bp.slot_config({}, ENV)
+    late = datetime(2026, 11, 20, 11, 50, tzinfo=timezone.utc)  # 16:50 Almaty: 17:00 is inside the 20 min margin
+    assert local(bp.free_slots(1, [], tz, hm, late)[0]) == "2026-11-20 21:00"
+
+
+def test_posts_per_day_variable_limits_slots():
+    tz, hm = bp.slot_config({}, dict(ENV, VYBEX_POSTS_PER_DAY="2"))
+    assert [local(d) for d in bp.free_slots(3, [], tz, hm, NOW)] == ["2026-11-20 12:00", "2026-11-20 17:00", "2026-11-21 12:00"]
+    with pytest.raises(bp.BufferError):
+        bp.slot_config({}, dict(ENV, VYBEX_POSTS_PER_DAY="many"))
+
+
+def test_queue_spreads_videos_over_slots_and_next_days(tmp_path):
+    out, buf = make_out(tmp_path, n=4), FakeBuf()
+    res = run(out, tmp_path, QUEUE, buf)
+    assert [r["state"] for r in res] == ["scheduled"] * 4
+    assert [local(c["due"]) for c in buf.calls] == ["2026-11-20 12:00", "2026-11-20 17:00", "2026-11-20 21:00", "2026-11-21 12:00"]
+    assert all(c["mode"] == "queue" and not c["notify"] for c in buf.calls)
+    assert report(out)["buffer"]["state"] == "queue" and not bp.failed(out)
+
+
+def test_queue_goes_after_what_is_already_scheduled(tmp_path):
+    old = [{"id": f"o{i}", "text": f"old {i}", "dueAt": datetime(2026, 11, 20, h, 0, tzinfo=ALM).astimezone(timezone.utc).isoformat()}
+           for i, h in enumerate((12, 17, 21))]
+    out, buf = make_out(tmp_path, n=1), FakeBuf(scheduled=old)
+    run(out, tmp_path, QUEUE, buf)
+    assert local(buf.calls[0]["due"]) == "2026-11-21 12:00"
+
+
+def test_plan_changes_nothing(tmp_path):
+    out, buf, st = make_out(tmp_path, n=2), FakeBuf(), FakeStore()
+    res = run(out, tmp_path, dict(QUEUE, VYBEX_BUFFER="plan"), buf, st)
+    assert [r["state"] for r in res] == ["plan", "plan"] and res[0]["due"].startswith("2026-11-20T12:00")
+    assert not buf.calls and not st.up and not (tmp_path / "s.json").exists()
+
+
+# ---------- draft / notification ----------
+
+def test_draft_has_no_time_and_does_not_look_at_the_queue(tmp_path):
+    out, buf = make_out(tmp_path), FakeBuf()
+    res = run(out, tmp_path, ENV, buf)
     assert [r["state"] for r in res] == ["draft", "draft"]
-    assert [c[3] for c in buf.calls] == ["draft", "draft"] and buf.calls[0][0] == "CH1"
-    assert report(out)["songs"][0]["buffer"]["post_id"] == "post1"
-    assert report(out)["buffer"]["state"] == "draft"
+    assert all(c["mode"] == "draft" and c["due"] is None for c in buf.calls)
     assert (out / "ready" / "1 Баста - Песня 1.mp4").exists()
 
 
-def test_same_mp4_is_not_sent_twice_even_after_restart(tmp_path):
+def test_silent_video_becomes_a_notification_not_auto_publishing(tmp_path):
+    out, buf = make_out(tmp_path, n=1, mode="tiktok"), FakeBuf()
+    res = run(out, tmp_path, QUEUE, buf)
+    assert res[0]["state"] == "notify" and buf.calls[0]["notify"] is True
+
+
+# ---------- rights, dedup, errors ----------
+
+def test_rights_gate(tmp_path):
+    out = make_out(tmp_path, n=1)
+    r = run(out, tmp_path, {"VYBEX_BUFFER": "queue"}, FakeBuf())  # local file without the owner's declaration
+    assert r[0]["state"] == "refused" and "declaration" in r[0]["detail"]
+    lic = make_out(tmp_path / "b", n=1, sources=[{"source": "jamendo", "state": "ok", "detail": ""}])
+    assert run(lic, tmp_path / "b", {"VYBEX_BUFFER": "queue"}, FakeBuf())[0]["state"] == "scheduled"
+    none = make_out(tmp_path / "c", n=1, sources=[{"source": "local", "state": "empty"}])
+    assert run(none, tmp_path / "c", QUEUE, FakeBuf())[0]["state"] == "refused"
+
+
+def test_same_mp4_is_never_sent_twice_in_any_mode(tmp_path):
     out, st = make_out(tmp_path, n=1), FakeStore()
-    bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, FakeBuf(), st)
+    run(out, tmp_path, ENV, FakeBuf(), st)  # draft
     buf2 = FakeBuf()
-    r = bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, buf2, st)  # state file reloaded from disk = new Actions run
+    r = run(out, tmp_path, QUEUE, buf2, st)  # now queue: the old test draft is NOT sent for real
     assert r[0]["state"] == "duplicate" and not buf2.calls and len(st.up) == 1
 
 
-def test_identical_content_under_two_names_is_one_post(tmp_path):
-    out, buf = make_out(tmp_path, same=True), FakeBuf()
-    r = bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, buf, FakeStore())
-    assert [x["state"] for x in r] == ["draft", "duplicate"] and len(buf.calls) == 1
-
-
-def test_draft_can_later_be_sent_for_real_but_queue_never_twice(tmp_path):
-    out, buf = make_out(tmp_path, n=1), FakeBuf()
-    bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, buf, FakeStore())
-    q = dict(ENV, VYBEX_BUFFER="queue")
-    assert bp.publish_dir(out, CFG, tmp_path / "s.json", q, buf, FakeStore())[0]["state"] == "queued"
-    assert bp.publish_dir(out, CFG, tmp_path / "s.json", q, buf, FakeStore())[0]["state"] == "duplicate"
-
-
-def test_error_keeps_mp4_and_is_recorded_and_can_be_retried(tmp_path):
+def test_error_keeps_mp4_turns_the_step_red_and_can_be_retried(tmp_path):
     out = make_out(tmp_path, n=1)
-    r = bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, FakeBuf(fail="Failed to fetch"), FakeStore())
+    r = run(out, tmp_path, QUEUE, FakeBuf(fail=bp.BufferError("Failed to fetch")))
     assert r[0]["state"] == "error" and "Failed to fetch" in r[0]["detail"]
-    assert (out / "ready" / "1 Баста - Песня 1.mp4").exists()
-    again = FakeBuf()
-    assert bp.publish_dir(out, CFG, tmp_path / "s.json", ENV, again, FakeStore())[0]["state"] == "draft"  # no post_id was saved -> not a duplicate
+    assert (out / "ready" / "1 Баста - Песня 1.mp4").exists() and bp.failed(out)
+    assert run(out, tmp_path, QUEUE, FakeBuf())[0]["state"] == "scheduled"
 
 
-def test_off_and_missing_secrets_do_nothing(tmp_path):
+def test_ambiguous_failure_adopts_the_post_if_it_reached_buffer(tmp_path):
+    out = make_out(tmp_path, n=1)
+    buf = FakeBuf(fail=bp.Ambiguous("HTTP 500"))
+    # the first look (slot search) sees nothing; the look after the unclear failure sees the post that "did go through"
+    cap = bp.caption_for((out / "ready" / "1 Баста - Песня 1 caption.txt").read_text(encoding="utf-8"))
+    answers = iter([[], [{"id": "P9", "text": cap, "dueAt": NOW.isoformat()}]])
+    buf.scheduled = lambda o, c: next(answers)
+    r = run(out, tmp_path, QUEUE, buf)
+    assert r[0]["state"] == "scheduled" and r[0]["post_id"] == "P9"
+
+
+def test_ambiguous_failure_without_trace_is_an_error(tmp_path):
+    out = make_out(tmp_path, n=1)
+    r = run(out, tmp_path, QUEUE, FakeBuf(fail=bp.Ambiguous("HTTP 500")))
+    assert r[0]["state"] == "error"
+
+
+def test_post_already_in_buffer_queue_is_not_created_again(tmp_path):
+    out = make_out(tmp_path, n=1)
+    cap = bp.caption_for((out / "ready" / "1 Баста - Песня 1 caption.txt").read_text(encoding="utf-8"))
+    buf = FakeBuf(scheduled=[{"id": "P7", "text": cap, "dueAt": (NOW + timedelta(days=1)).isoformat()}])
+    r = run(out, tmp_path, QUEUE, buf)
+    assert r[0]["state"] == "duplicate" and not buf.calls
+
+
+def test_off_and_missing_secrets(tmp_path):
     out = make_out(tmp_path)
     assert bp.publish_dir(out, CFG, tmp_path / "s.json", {"VYBEX_BUFFER": "off"}) == []
-    assert report(out)["buffer"]["state"] == "off"
-    assert bp.publish_dir(out, CFG, tmp_path / "s.json", {}) == []
-    assert "missing secrets" in report(out)["buffer"]["detail"] and "BUFFER_API_KEY" in report(out)["buffer"]["detail"]
+    assert report(out)["buffer"]["state"] == "off" and not bp.failed(out)
+    assert bp.publish_dir(out, CFG, tmp_path / "s.json", {"VYBEX_BUFFER": "queue"}) == []
+    b = report(out)["buffer"]
+    assert b["state"] == "skipped" and "BUFFER_API_KEY" in b["detail"] and bp.failed(out)  # not hidden behind a green step
+
+
+def test_paused_queue_and_unknown_channel_are_errors(tmp_path):
+    out = make_out(tmp_path, n=1)
+    assert run(out, tmp_path, QUEUE, FakeBuf(paused=True)) == []
+    assert report(out)["buffer"]["state"] == "error" and "paused" in report(out)["buffer"]["detail"]
+    out2 = make_out(tmp_path / "b", n=1)
+    bp.publish_dir(out2, {"buffer": {"channel_id": "NOPE"}}, tmp_path / "b" / "s.json", QUEUE, FakeBuf(), FakeStore(), NOW)
+    assert report(out2)["buffer"]["state"] == "error"
+
+
+# ---------- real status ----------
+
+def test_statuses_are_checked_next_run_and_errors_surface(tmp_path):
+    out = make_out(tmp_path, n=2)
+    run(out, tmp_path, QUEUE, FakeBuf())
+    state = bp.load_state(tmp_path / "s.json")
+    assert {e["status"] for e in state.values()} == {"scheduled"}
+    pids = [e["post_id"] for e in state.values()]
+    buf = FakeBuf(statuses={pids[0]: {"status": "sent"}, pids[1]: {"status": "error", "error": {"message": "TikTok rejected"}}})
+    out2 = make_out(tmp_path / "next", n=0)  # next day's run, same state file
+    bp.publish_dir(out2, CFG, tmp_path / "s.json", QUEUE, buf, FakeStore(), NOW + timedelta(days=1))
+    assert any("TikTok rejected" in p for p in report(out2)["buffer"]["problems"]) and bp.failed(out2)
+    assert {e["status"] for e in bp.load_state(tmp_path / "s.json").values()} == {"sent", "error"}
+
+
+def test_overdue_scheduled_post_is_a_problem():
+    state = {"a": {"mode": "queue", "post_id": "P", "status": "scheduled", "file": "f.mp4", "due": (NOW - timedelta(hours=3)).isoformat()}}
+    assert "still 'scheduled'" in bp.refresh_statuses(state, FakeBuf(), NOW)[0]
+    assert bp.refresh_statuses({"a": dict(state["a"], due=NOW.isoformat())}, FakeBuf(), NOW) == []
+    unknown = {"a": dict(state["a"])}
+    assert bp.refresh_statuses(unknown, FakeBuf(statuses={"P": bp.BufferError("boom")}), NOW) == [] and "status_note" in unknown["a"]
+
+
+def test_cleanup_waits_for_the_post_time_and_keeps_drafts():
+    old = (NOW - timedelta(days=10)).isoformat()
+    state = {"gone": {"hosted": True, "mode": "queue", "public_id": "gone", "uploaded_at": old, "due": (NOW - timedelta(days=3)).isoformat()},
+             "future": {"hosted": True, "mode": "queue", "public_id": "future", "uploaded_at": old, "due": (NOW + timedelta(days=2)).isoformat()},
+             "fresh": {"hosted": True, "mode": "queue", "public_id": "fresh", "uploaded_at": (NOW - timedelta(days=1)).isoformat(), "due": None},
+             "draft": {"hosted": True, "mode": "draft", "public_id": "draft", "uploaded_at": old, "due": None}}
+    st = FakeStore()
+    assert bp.cleanup(state, st, 7, NOW) == 1 and st.deleted == ["gone"]
+
+
+# ---------- API client ----------
+
+class R:
+    def __init__(self, code=200, data=None):
+        self.status_code, self._d = code, data
+
+    def json(self):
+        return self._d
+
+
+def client(seq):
+    calls = []
+
+    def post(url, json=None, **kw):
+        calls.append(json)
+        x = next(seq)
+        if isinstance(x, Exception):
+            raise x
+        return x
+
+    return bp.Buffer("k", post, sleep=lambda s: None), calls
+
+
+def test_reads_retry_on_gateway_errors_and_network_drops():
+    ok = R(200, {"data": {"x": 1}})
+    b, calls = client(iter([R(502), R(429), requests.ConnectionError("x"), ok]))
+    assert b.gql("query { x }") == {"x": 1} and len(calls) == 4
+    b, calls = client(iter([R(500), R(200, {"data": {"x": 2}})]))
+    assert b.gql("query { x }") == {"x": 2}
+    b, _ = client(iter([R(502)] * 4))
+    with pytest.raises(bp.BufferError):
+        b.gql("query { x }")
+
+
+def test_create_post_is_not_blindly_repeated_after_an_unclear_failure():
+    b, calls = client(iter([requests.ReadTimeout("slow"), R(200, {"data": {"createPost": {"post": {"id": "P"}}}})]))
+    with pytest.raises(bp.Ambiguous):
+        b.create_post("CH", "t", "https://x/v.mp4", "queue")
+    assert len(calls) == 1
+    b, calls = client(iter([R(500)]))
+    with pytest.raises(bp.Ambiguous):
+        b.create_post("CH", "t", "https://x/v.mp4", "queue")
+    b, calls = client(iter([R(503), R(200, {"data": {"createPost": {"post": {"id": "P"}}}})]))  # gateway error = not processed
+    assert b.create_post("CH", "t", "https://x/v.mp4", "queue") == "P" and len(calls) == 2
+
+
+def test_create_post_payloads():
+    ok = R(200, {"data": {"createPost": {"post": {"id": "P1"}}}})
+    b, calls = client(iter([ok, ok, ok]))
+    due = datetime(2026, 11, 20, 7, 0, tzinfo=timezone.utc)
+    b.create_post("CH", "t", "https://x/v.mp4", "queue", due)
+    q = calls[-1]["variables"]["input"]
+    assert q["mode"] == "customScheduled" and q["dueAt"] == "2026-11-20T07:00:00.000Z" and q["schedulingType"] == "automatic"
+    assert q["aiAssisted"] is True and q["metadata"]["tiktok"]["isAiGenerated"] is True and "saveToDraft" not in q
+    b.create_post("CH", "t", "https://x/v.mp4", "queue", due, notify=True)
+    assert calls[-1]["variables"]["input"]["schedulingType"] == "notification"
+    b.create_post("CH", "t", "https://x/v.mp4", "draft")
+    d = calls[-1]["variables"]["input"]
+    assert d["saveToDraft"] is True and d["mode"] == "addToQueue" and "dueAt" not in d
+
+
+def test_mutation_error_message_is_raised():
+    b, _ = client(iter([R(200, {"data": {"createPost": {"message": "Failed to fetch video"}}})]))
+    with pytest.raises(bp.BufferError, match="Failed to fetch"):
+        b.create_post("CH", "t", "https://x/v.mp4", "queue")
+
+
+def test_scheduled_reads_every_page():
+    pages = iter([R(200, {"data": {"posts": {"edges": [{"node": {"id": "a", "text": "t", "dueAt": "x"}}], "pageInfo": {"hasNextPage": True, "endCursor": "c"}}}}),
+                  R(200, {"data": {"posts": {"edges": [{"node": {"id": "b", "text": "t", "dueAt": "y"}}], "pageInfo": {"hasNextPage": False, "endCursor": None}}}})])
+    b, calls = client(pages)
+    assert [p["id"] for p in b.scheduled("O", "CH")] == ["a", "b"] and calls[1]["variables"]["after"] == "c"
+    assert "scheduled" in calls[0]["query"] and "draft" not in calls[0]["query"]  # drafts are never listed, so never touched
+
+
+# ---------- media and url checks ----------
+
+def info(codec="h264", w=1080, h=1920, audio=True, dur="30.0"):
+    st = [{"codec_type": "video", "codec_name": codec, "width": w, "height": h}] + ([{"codec_type": "audio"}] if audio else [])
+    return {"streams": st, "format": {"duration": dur}}
+
+
+def media(monkeypatch, tmp_path, i, audio=True, decode_err=""):
+    monkeypatch.undo()  # drop the autouse stub of check_media
+    import pipeline.qa as qa
+    monkeypatch.setattr(qa, "probe", lambda p: i)
+    monkeypatch.setattr(bp.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1 if decode_err else 0, stderr=decode_err))
+    f = tmp_path / "v.mp4"
+    f.write_bytes(b"x")
+    return bp.check_media(f, audio, {})
+
+
+def test_check_media(monkeypatch, tmp_path):
+    assert media(monkeypatch, tmp_path, info(), True) == {"duration": 30.0, "audio": True}
+    assert media(monkeypatch, tmp_path, info(audio=False), False)["audio"] is False  # silent TikTok-sound video is fine
+    for bad, why in ((info(codec="hevc"), "h264"), (info(w=720, h=1280), "1080x1920"), (info(audio=False), "audio"), (info(dur="1.0"), "duration")):
+        with pytest.raises(bp.BufferError, match=why):
+            media(monkeypatch, tmp_path, bad, True)
+    with pytest.raises(bp.BufferError, match="decode"):
+        media(monkeypatch, tmp_path, info(), True, decode_err="moov atom not found")
 
 
 def test_non_mp4_and_huge_files_are_refused(tmp_path):
@@ -131,62 +389,31 @@ def test_non_mp4_and_huge_files_are_refused(tmp_path):
         bp.check_file(g, {"max_mb": 1})
 
 
-def test_cleanup_deletes_only_old_hosted_files():
-    now = datetime(2026, 11, 20, tzinfo=timezone.utc)
-    state = {"a": {"hosted": True, "public_id": "old", "uploaded_at": (now - timedelta(days=8)).isoformat()},
-             "b": {"hosted": True, "public_id": "new", "uploaded_at": (now - timedelta(days=2)).isoformat()},
-             "c": {"hosted": False, "public_id": "gone", "uploaded_at": (now - timedelta(days=30)).isoformat()}}
-    st = FakeStore()
-    assert bp.cleanup(state, st, 7, now) == 1 and st.deleted == ["old"] and state["a"]["hosted"] is False and state["b"]["hosted"] is True
-
-
-def test_create_post_payload_has_ai_label_and_draft_flag():
-    sent = {}
-
-    class R:
-        status_code = 200
-        def json(self): return {"data": {"createPost": {"post": {"id": "P1"}}}}
-
-    def post(url, json=None, **kw):
-        sent.update(json)
-        return R()
-
-    assert bp.Buffer("k", post).create_post("CH", "t", "https://x/v.mp4", "draft") == "P1"
-    i = sent["variables"]["input"]
-    assert i["saveToDraft"] is True and i["schedulingType"] == "automatic" and i["mode"] == "addToQueue"
-    assert i["aiAssisted"] is True and i["metadata"]["tiktok"]["isAiGenerated"] is True
-    assert i["assets"][0]["video"]["url"] == "https://x/v.mp4"
-    sent.clear()
-    bp.Buffer("k", post).create_post("CH", "t", "https://x/v.mp4", "queue")
-    assert "saveToDraft" not in sent["variables"]["input"]
-
-
-def test_mutation_error_message_is_raised():
-    class R:
-        status_code = 200
-        def json(self): return {"data": {"createPost": {"message": "Failed to fetch video"}}}
-
-    with pytest.raises(bp.BufferError, match="Failed to fetch"):
-        bp.Buffer("k", lambda *a, **k: R()).create_post("CH", "t", "https://x/v.mp4", "queue")
-
-
 def test_check_url_rules():
-    class R:
+    class H:
         def __init__(self, code=200, ct="video/mp4", n="5"):
             self.status_code, self.headers = code, {"content-type": ct, "content-length": n}
 
-    import importlib
-    importlib.reload(bp)  # undo the autouse stub
-    bp.check_url("https://x/v.mp4", 5, lambda *a, **k: R())
-    for bad, size in ((R(302), 5), (R(ct="text/html"), 5), (R(n="9"), 5)):
+    ORIG_CHECK_URL("https://x/v.mp4", 5, lambda *a, **k: H())
+    for bad in (H(302), H(ct="text/html"), H(n="9")):
         with pytest.raises(bp.BufferError):
-            bp.check_url("https://x/v.mp4", size, lambda *a, **k: bad)
+            ORIG_CHECK_URL("https://x/v.mp4", 5, lambda *a, **k: bad)
     with pytest.raises(bp.BufferError):
-        bp.check_url("http://x/v.mp4", 5, lambda *a, **k: R())
+        ORIG_CHECK_URL("http://x/v.mp4", 5, lambda *a, **k: H())
 
 
-def test_setup_writes_channel_id_into_config(tmp_path):
+def test_setup_and_check(tmp_path):
     p = tmp_path / "config.json"
     p.write_text('{"buffer": {"mode": "draft", "channel_id": "", "keep_days": 7}}', encoding="utf-8")
     bp.setup(buf=FakeBuf(), config_path=p)
-    assert json.loads(p.read_text())["buffer"]["channel_id"] == "CH9"
+    assert json.loads(p.read_text())["buffer"]["channel_id"] == "CH1"
+    c = bp.check(CFG, ENV, FakeBuf(), NOW)
+    assert c["scheduled"] == 0 and c["next_free"][0].startswith("2026-11-20T12:00") and c["slots_timezone"] == "Asia/Almaty"
+
+
+def test_summary_lines(tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "report.json").write_text(json.dumps({"songs": [{"song": "A - B", "buffer": {"state": "scheduled", "due": "2026-11-20T12:00:00+05:00"}}, {"song": "C"}],
+                                                 "buffer": {"state": "queue", "slots": ["12:00", "17:00"], "timezone": "Asia/Almaty", "problems": ["f.mp4: boom"]}}), encoding="utf-8")
+    assert bp.summary(out) == ["- buffer: queue  slots=12:00,17:00 Asia/Almaty", "  - PROBLEM: f.mp4: boom", "  - A - B: scheduled 2026-11-20T12:00:00+05:00"]

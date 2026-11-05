@@ -1,30 +1,39 @@
-"""Hands finished videos to Buffer (official GraphQL API, https://developers.buffer.com) so the TikTok queue publishes them during the day.
+"""Hands finished videos to Buffer (official GraphQL API, https://developers.buffer.com): 3 posts a day at fixed local times.
 
-Flow per video: sha256 -> already sent? -> upload to a temporary Cloudinary folder (Buffer needs a public HTTPS URL, Drive links do not work)
--> check the URL like Buffer will -> createPost (draft | queue) -> record in a state file -> report.json.
-Hosted files must live until Buffer posts them (it fetches at publish time), so they are deleted by age (`keep_days`) at the next run.
-The MP4 in out/<date>/ready is never touched. Secrets only from env: BUFFER_API_KEY, CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET.
+Per video: rights gate -> media checks (ffprobe + full decode) -> already sent? (sha256 in state) -> upload to a temporary Cloudinary
+folder (Buffer needs a public HTTPS URL) -> check the URL like Buffer will -> createPost -> state + report.json.
+Modes (VYBEX_BUFFER env/variable, else config buffer.mode; anything unknown = off):
+  off    nothing        plan   read-only: checks, free slots, nothing uploaded or created
+  draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos get a
+                               *notification* (reminder to add the TikTok sound by hand) instead of automatic publishing
+The Buffer posting schedule cannot be written through the API, so slots are set per post (`dueAt`, UTC). Existing drafts are never edited.
+Hosted files must live until Buffer posts them (it fetches at publish time) and are deleted by age. The MP4 in ready/ is never touched.
+Secrets only from env: BUFFER_API_KEY, CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET.
 
-python -m pipeline buffer setup                 # finds the TikTok channel, writes its id into config.json
-python -m pipeline buffer publish out/<date> [--state out/buffer-state.json]"""
+python -m pipeline buffer setup | check | publish out/<date> | summary out/<date> [--state out/buffer-state.json]"""
 import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import requests
 
 from .common import ROOT, load_config, safe_err
 
 API = "https://api.buffer.com"
-MODES = ("off", "draft", "queue")
+MODES = ("off", "plan", "draft", "queue")
 MAX_TEXT = 2200  # TikTok caption limit
+DEFAULT_SLOTS = ["12:00", "17:00", "21:00"]
 
 Q_ORGS = "query { account { organizations { id name } } }"
-Q_CHANNELS = "query($o: OrganizationId!) { channels(input: {organizationId: $o}) { id name displayName service isQueuePaused } }"
+Q_CHANNELS = ("query($o: OrganizationId!) { channels(input: {organizationId: $o}) "
+              "{ id name displayName service isQueuePaused isDisconnected isLocked timezone } }")
 M_POST = """mutation($input: CreatePostInput!) { createPost(input: $input) {
   ... on PostActionSuccess { post { id } }
   ... on MutationError { message } } }"""
@@ -32,6 +41,10 @@ M_POST = """mutation($input: CreatePostInput!) { createPost(input: $input) {
 
 class BufferError(Exception):
     pass
+
+
+class Ambiguous(BufferError):
+    """The request may have been processed (5xx / read timeout): never blindly repeated, first look in Buffer."""
 
 
 def sha256(path):
@@ -53,27 +66,45 @@ def caption_for(txt):
     return "\n\n".join(paras)[:MAX_TEXT]
 
 
-class Buffer:
-    def __init__(self, key, post=requests.post):
-        self.key, self._post = key, post
+def parse_dt(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
-    def gql(self, query, variables=None):
-        for attempt in range(3):
+
+# ---------- Buffer API ----------
+
+class Buffer:
+    def __init__(self, key, post=requests.post, sleep=time.sleep):
+        self.key, self._post, self._sleep = key, post, sleep
+
+    def gql(self, query, variables=None, repeatable=True):
+        """repeatable=False for createPost: only failures that prove the request was NOT processed are retried."""
+        for attempt in range(4):
+            last = attempt == 3
             try:
                 r = self._post(API, json={"query": query, "variables": variables or {}}, timeout=60,
                                headers={"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"})
             except requests.RequestException as e:
-                raise BufferError(f"network: {safe_err(e)}")
-            if r.status_code == 429 and attempt < 2:  # only 429 is retried: the request was not processed, a timeout might have been
-                time.sleep(5 * (attempt + 1))
+                if repeatable or isinstance(e, requests.ConnectTimeout):  # a connect timeout means nothing was sent
+                    if not last:
+                        self._sleep(3 * (attempt + 1))
+                        continue
+                    raise BufferError(f"network: {safe_err(e)}")
+                raise Ambiguous(f"network: {safe_err(e)}")
+            if r.status_code in (429, 502, 503, 504) and not last:  # not processed (rate limit / gateway) -> safe to repeat
+                self._sleep(5 * (attempt + 1))
                 continue
+            if r.status_code >= 500 and repeatable and not last:
+                self._sleep(5 * (attempt + 1))
+                continue
+            if r.status_code >= 500:
+                raise (BufferError if repeatable else Ambiguous)(f"HTTP {r.status_code}")
             if r.status_code != 200:
                 raise BufferError(f"HTTP {r.status_code}")
             body = r.json()
             if body.get("errors"):
                 raise BufferError("; ".join(str(e.get("message", e))[:150] for e in body["errors"][:2]))
             return body["data"]
-        raise BufferError("rate limited")
+        raise BufferError("unreachable")
 
     def tiktok_channels(self):
         out = []
@@ -81,23 +112,60 @@ class Buffer:
             for ch in self.gql(Q_CHANNELS, {"o": org["id"]})["channels"]:
                 if str(ch.get("service", "")).lower() == "tiktok":
                     out.append({"id": ch["id"], "name": ch.get("displayName") or ch.get("name"), "org": org["id"],
-                                "paused": ch.get("isQueuePaused")})
+                                "paused": ch.get("isQueuePaused"), "disconnected": ch.get("isDisconnected"),
+                                "locked": ch.get("isLocked"), "timezone": ch.get("timezone")})
         return out
 
-    def create_post(self, channel_id, text, url, mode):
-        inp = {"text": text, "channelId": channel_id, "schedulingType": "automatic", "mode": "addToQueue", "aiAssisted": True,
+    def scheduled(self, org, channel_id):
+        """All posts of the channel in status `scheduled` (drafts are not included, so drafts are never touched). -> [{id,text,dueAt}]"""
+        out, after = [], None
+        for _ in range(20):
+            q = ("query($first: Int, $after: String) { posts(first: $first, after: $after, input: {organizationId: %s, "
+                 "filter: {status: [scheduled], channelIds: [%s]}}) { edges { node { id text dueAt } } pageInfo { hasNextPage endCursor } } }"
+                 % (json.dumps(org), json.dumps(channel_id)))
+            d = self.gql(q, {"first": 50, "after": after})["posts"]
+            out += [e["node"] for e in d["edges"]]
+            if not d["pageInfo"]["hasNextPage"]:
+                return out
+            after = d["pageInfo"]["endCursor"]
+        raise BufferError("more than 1000 scheduled posts")
+
+    def post_status(self, post_id):
+        q = "query { post(input: {id: %s}) { id status dueAt sentAt externalLink error { message } } }" % json.dumps(post_id)
+        return self.gql(q)["post"]
+
+    def create_post(self, channel_id, text, url, mode, due=None, notify=False):
+        inp = {"text": text, "channelId": channel_id, "schedulingType": "notification" if notify else "automatic", "aiAssisted": True,
+               "mode": "customScheduled" if due else "addToQueue",
                "assets": [{"video": {"url": url, "metadata": {"thumbnailOffset": 2000}}}],
                "metadata": {"tiktok": {"isAiGenerated": True}}}
+        if due:
+            inp["dueAt"] = due.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         if mode == "draft":
             inp["saveToDraft"] = True
-        res = self.gql(M_POST, {"input": inp})["createPost"]
+        res = self.gql(M_POST, {"input": inp}, repeatable=False)["createPost"]
         if "post" not in res:
             raise BufferError(res.get("message", "createPost failed")[:200])
         return res["post"]["id"]
 
 
+def resolve_channel(buf, bcfg, mode):
+    chs = buf.tiktok_channels()
+    want = bcfg.get("channel_id")
+    ch = next((c for c in chs if c["id"] == want), None) if want else (chs[0] if len(chs) == 1 else None)
+    if not ch:
+        raise BufferError(f"TikTok channel {'id ' + want if want else '(expected exactly 1)'} not found among {len(chs)}; run `python -m pipeline buffer setup`")
+    if ch["disconnected"] or ch["locked"]:
+        raise BufferError("TikTok channel is disconnected or locked in Buffer: reconnect it")
+    if ch["paused"] and mode == "queue":
+        raise BufferError("the channel queue is paused in Buffer: posts would not be published")
+    return ch
+
+
+# ---------- temporary public host ----------
+
 class Cloudinary:
-    """Temporary public host. Public id = sha256 of the file: unguessable, and the same file always gets the same URL."""
+    """Public id = sha256 of the file: unguessable, and the same file always gets the same URL."""
 
     def __init__(self, cloud, key, secret, post=requests.post):
         self.cloud, self.key, self.secret, self._post = cloud, key, secret, post
@@ -142,6 +210,8 @@ def check_url(url, size, get=requests.head):
         raise BufferError("media URL serves a different size than the uploaded file")
 
 
+# ---------- checks before sending ----------
+
 def check_file(path, bcfg):
     p = Path(path)
     if p.suffix.lower() != ".mp4":
@@ -151,6 +221,78 @@ def check_file(path, bcfg):
     if mb > lim:
         raise BufferError(f"file is {mb:.0f} MB, limit {lim} MB")
 
+
+def check_media(path, expect_audio, bcfg):
+    """MP4 + H.264 + 1080x1920 (+ audio when the video must carry music) + sane duration + decodes without errors. -> info dict."""
+    from .qa import probe
+    check_file(path, bcfg)
+    info = probe(path)
+    v = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+    if not v:
+        raise BufferError("no video stream (broken file)")
+    if v.get("codec_name") != "h264":
+        raise BufferError(f"codec {v.get('codec_name')}, TikTok needs h264")
+    if (v.get("width"), v.get("height")) != (1080, 1920):
+        raise BufferError(f"resolution {v.get('width')}x{v.get('height')}, expected 1080x1920")
+    has_audio = any(s.get("codec_type") == "audio" for s in info["streams"])
+    if expect_audio and not has_audio:
+        raise BufferError("video must have music but has no audio stream")
+    dur = float(info.get("format", {}).get("duration", 0))
+    if not 3 <= dur <= bcfg.get("max_sec", 180):
+        raise BufferError(f"duration {dur:.1f}s outside 3..{bcfg.get('max_sec', 180)}s")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"], capture_output=True, text=True)
+    if r.returncode or r.stderr.strip():
+        raise BufferError("file does not decode cleanly: " + r.stderr.strip()[:120])
+    return {"duration": round(dur, 1), "audio": has_audio}
+
+
+def rights_ok(rec, env):
+    """Gate: a track from a licence-checked source passes; a file you dropped into Drive passes only with the owner's declaration.
+    shortcut: this checks the declaration, it cannot prove the rights themselves."""
+    ok = [s for s in rec.get("sources", []) if s.get("state") == "ok"]
+    if not ok:
+        return False, "no confirmed audio source in the report"
+    if all(s.get("source") == "local" for s in ok) and env.get("VYBEX_OWNER_DECLARES_RIGHTS") != "1":
+        return False, "owner declaration of rights is missing (VYBEX_OWNER_DECLARES_RIGHTS=1)"
+    return True, ""
+
+
+# ---------- schedule ----------
+
+def slot_config(bcfg, env):
+    tz = ZoneInfo(env.get("VYBEX_TIMEZONE") or bcfg.get("timezone") or "Asia/Almaty")
+    slots = bcfg.get("slots") or DEFAULT_SLOTS
+    try:
+        n = int(env.get("VYBEX_POSTS_PER_DAY") or bcfg.get("posts_per_day") or len(slots))
+    except ValueError:
+        raise BufferError("VYBEX_POSTS_PER_DAY must be a number")
+    n = max(1, min(n, len(slots)))  # shortcut: the first N slots are used, not an even spread
+    return tz, [tuple(int(x) for x in s.split(":")) for s in slots[:n]]
+
+
+def free_slots(count, taken, tz, hm, now, margin_min=20, horizon_days=60):
+    """Next `count` slots (UTC datetimes) not already used by `taken` posts and not above hm-per-day. Raises when none within the horizon."""
+    out, per_day = [], len(hm)
+    day0 = now.astimezone(tz).date()
+    for d in range(horizon_days):
+        day = day0 + timedelta(days=d)
+        busy = sum(1 for t in taken + out if t.astimezone(tz).date() == day)
+        for h, m in hm:
+            if len(out) == count:
+                return out
+            if busy >= per_day:
+                break
+            dt = datetime(day.year, day.month, day.day, h, m, tzinfo=tz)
+            if dt <= now + timedelta(minutes=margin_min) or any(abs(t - dt) < timedelta(minutes=30) for t in taken + out):
+                continue
+            out.append(dt.astimezone(timezone.utc))
+            busy += 1
+    if len(out) < count:
+        raise BufferError(f"no free slot within {horizon_days} days")
+    return out
+
+
+# ---------- state ----------
 
 def load_state(path):
     p = Path(path)
@@ -162,11 +304,36 @@ def save_state(path, st):
     Path(path).write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def cleanup(state, storage, keep_days, now=None):
-    """Delete hosted files older than keep_days (Buffer has fetched them long before). Returns how many were removed."""
-    now, n = now or datetime.now(timezone.utc), 0
+def refresh_statuses(state, buf, now):
+    """Ask Buffer what really happened to the queued posts. -> list of problems (error posts, overdue posts)."""
+    problems = []
     for sha, e in state.items():
-        if e.get("hosted") and datetime.fromisoformat(e["uploaded_at"]) < now - timedelta(days=keep_days):
+        if e.get("mode") != "queue" or not e.get("post_id") or e.get("status") in ("sent", "error"):
+            continue
+        try:
+            p = buf.post_status(e["post_id"])
+        except BufferError as ex:
+            e["status_note"] = f"status check failed: {str(ex)[:80]}"  # shortcut: the check query is unverified live, a failure is only noted
+            continue
+        e["status"] = p.get("status", e.get("status"))
+        e.pop("status_note", None)
+        if e["status"] == "error":
+            e["error"] = ((p.get("error") or {}).get("message") or "unknown")[:200]
+            problems.append(f"{e.get('file')}: Buffer failed to publish: {e['error']}")
+        elif e["status"] == "scheduled" and e.get("due") and parse_dt(e["due"]) < now - timedelta(hours=1):
+            problems.append(f"{e.get('file')}: still 'scheduled' an hour after its time")
+    return problems
+
+
+def cleanup(state, storage, keep_days, now):
+    """Delete hosted files once their post time is over by a day AND they are older than keep_days. Drafts are kept (you may schedule them later)."""
+    n = 0
+    for e in state.values():
+        if not e.get("hosted") or e.get("mode") == "draft":
+            continue
+        up = parse_dt(e["uploaded_at"])
+        ref = parse_dt(e["due"]) if e.get("due") else up
+        if up < now - timedelta(days=keep_days) and ref < now - timedelta(days=1):
             try:
                 if storage.delete(e["public_id"]):
                     e["hosted"], n = False, n + 1
@@ -175,71 +342,114 @@ def cleanup(state, storage, keep_days, now=None):
     return n
 
 
-def publish_one(mp4, caption, channel_id, mode, state, buf, storage, bcfg, now=None):
+# ---------- publishing ----------
+
+def publish_one(c, mp4, caption, rec, silent):
     """-> result dict for report.json. Never raises."""
-    now = now or datetime.now(timezone.utc)
     try:
-        check_file(mp4, bcfg)
+        ok, why = rights_ok(rec, c.env)
+        if not ok:
+            return {"state": "refused", "detail": why}
+        info = check_media(mp4, not silent, c.bcfg)
         sha = sha256(mp4)
-        old = state.get(sha)
-        if old and old.get("post_id") and not (old["mode"] == "draft" and mode == "queue"):  # a draft may later be sent for real
+        old = c.state.get(sha)
+        if old and old.get("post_id"):  # the same file is never sent twice, in any mode (a test draft is not re-sent for real either)
             return {"state": "duplicate", "detail": f"already sent as {old['mode']} {old['post_id']}"}
-        size, pid = Path(mp4).stat().st_size, f"vybex/{sha[:40]}"
-        url = storage.upload(mp4, pid)
-        state[sha] = {"public_id": pid, "uploaded_at": now.isoformat(), "hosted": True, "mode": mode, "file": Path(mp4).name}
+        twin = next((p for p in c.taken_posts if p["text"] == caption), None)
+        if twin:  # an earlier attempt reached Buffer although we never saw the answer
+            c.state[sha] = {"mode": c.mode, "post_id": twin["id"], "file": Path(mp4).name, "hosted": False, "adopted": True}
+            return {"state": "duplicate", "detail": f"already in the Buffer queue as {twin['id']}"}
+        due = free_slots(1, c.taken, c.tz, c.hm, c.now)[0] if c.mode in ("queue", "plan") else None
+        if c.mode == "plan":
+            c.taken.append(due)
+            return {"state": "plan", "due": due.astimezone(c.tz).isoformat(), "notification": silent, "media": info}
+        pid, size = f"vybex/{sha[:40]}", Path(mp4).stat().st_size
+        url = c.storage.upload(mp4, pid)
+        c.state[sha] = {"public_id": pid, "uploaded_at": c.now.isoformat(), "hosted": True, "mode": c.mode, "file": Path(mp4).name,
+                        "due": due.isoformat() if due else None}
         check_url(url, size)
-        post_id = buf.create_post(channel_id, caption, url, mode)
-        state[sha]["post_id"] = post_id
-        until = now + timedelta(days=bcfg.get("keep_days", 7))
-        return {"state": "draft" if mode == "draft" else "queued", "post_id": post_id, "hosted_until": until.date().isoformat()}
+        try:
+            post_id = c.buf.create_post(c.channel["id"], caption, url, c.mode, due, silent)
+        except Ambiguous:  # maybe it did go through: look in the queue before anyone repeats it
+            twin = next((p for p in c.buf.scheduled(c.channel["org"], c.channel["id"]) if p["text"] == caption), None) if c.mode == "queue" else None
+            if not twin:
+                raise
+            post_id = twin["id"]
+        c.state[sha].update(post_id=post_id, status="draft" if c.mode == "draft" else "scheduled", notification=silent)
+        if due:
+            c.taken.append(due)
+        res = {"state": "draft" if c.mode == "draft" else ("notify" if silent else "scheduled"), "post_id": post_id}
+        if due:
+            res["due"] = due.astimezone(c.tz).isoformat()
+        return res
     except (BufferError, OSError, KeyError, ValueError) as e:
         return {"state": "error", "detail": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
-
 def publish_dir(out, cfg, state_path, env=os.environ, buf=None, storage=None, now=None):
     """Send every video of out/ready that report.json lists. Writes the result into report.json. -> list of results."""
-    bcfg = cfg.get("buffer", {})
-    out = Path(out)
+    bcfg, out = cfg.get("buffer", {}), Path(out)
     rep_path = out / "report.json"
     report = json.loads(rep_path.read_text(encoding="utf-8"))
-    mode = mode_of(cfg, env)
+    mode, now = mode_of(cfg, env), now or datetime.now(timezone.utc)
+
+    def finish(**b):
+        report["buffer"] = b
+        rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+
     todo = [r for r in report["songs"] if r.get("ready") and r["stages"].get("render") == "ok"]
-    if mode == "off" or not todo:
-        report["buffer"] = {"state": "off" if mode == "off" else "nothing to send"}
-        rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    if mode == "off":
+        finish(state="off")
         return []
-    missing = [k for k in ("BUFFER_API_KEY", "CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET") if not env.get(k)]
-    if missing and not (buf and storage):
-        report["buffer"] = {"state": "skipped", "detail": "missing secrets: " + ", ".join(missing)}
-        rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    need = ["BUFFER_API_KEY"] + (["CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET"] if mode in ("draft", "queue") else [])
+    missing = [k for k in need if not env.get(k)]
+    if missing and not (buf and (storage or mode == "plan")):
+        finish(state="skipped", detail="missing secrets: " + ", ".join(missing))
         return []
     buf = buf or Buffer(env["BUFFER_API_KEY"])
-    storage = storage or Cloudinary(env["CLOUDINARY_CLOUD_NAME"], env["CLOUDINARY_API_KEY"], env["CLOUDINARY_API_SECRET"])
-    state = load_state(state_path)
-    results = []
+    if mode in ("draft", "queue"):
+        storage = storage or Cloudinary(env["CLOUDINARY_CLOUD_NAME"], env["CLOUDINARY_API_KEY"], env["CLOUDINARY_API_SECRET"])
+    state, results = load_state(state_path), []
     try:
-        channel = bcfg.get("channel_id") or _only_channel(buf)
-        cleaned = cleanup(state, storage, bcfg.get("keep_days", 7), now)
-        report["buffer"] = {"state": mode, "channel": channel, "cleaned": cleaned}
+        ch = resolve_channel(buf, bcfg, mode)
+        tz, hm = slot_config(bcfg, env)
+        sched = buf.scheduled(ch["org"], ch["id"]) if mode in ("queue", "plan") else []
+        taken = [parse_dt(p["dueAt"]) for p in sched if p.get("dueAt")]
+        info = {"state": mode, "channel": ch["name"], "timezone": tz.key, "slots": [f"{h:02d}:{m:02d}" for h, m in hm], "scheduled_before": len(sched)}
+        if mode != "plan":
+            info["problems"] = refresh_statuses(state, buf, now) if mode == "queue" else []
+            info["cleaned"] = cleanup(state, storage, bcfg.get("keep_days", 7), now)
+        report["buffer"] = info
+        c = SimpleNamespace(mode=mode, channel=ch, state=state, buf=buf, storage=storage, bcfg=bcfg, now=now, tz=tz, hm=hm, taken=taken,
+                            taken_posts=sched, env=env)
         for r in todo:
-            mp4 = out / "ready" / f"{r['ready']}.mp4"
-            cap = out / "ready" / f"{r['ready']} caption.txt"
-            r["buffer"] = publish_one(mp4, caption_for(cap.read_text(encoding="utf-8")), channel, mode, state, buf, storage, bcfg, now)
+            mp4, cap = out / "ready" / f"{r['ready']}.mp4", out / "ready" / f"{r['ready']} caption.txt"
+            r["buffer"] = publish_one(c, mp4, caption_for(cap.read_text(encoding="utf-8")), rec=r, silent=report.get("mode") == "tiktok")
             results.append(r["buffer"])
     except BufferError as e:  # no channel / API down: the videos stay in ready/ and Drive
-        report["buffer"] = {"state": "error", "detail": str(e)[:200]}
+        report["buffer"] = dict(report.get("buffer") or {"state": mode}, state="error", detail=str(e)[:200])
     finally:
-        save_state(state_path, state)
+        if mode != "plan":
+            save_state(state_path, state)
         rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return results
 
 
-def _only_channel(buf):
-    chs = buf.tiktok_channels()
-    if len(chs) != 1:
-        raise BufferError(f"expected exactly 1 TikTok channel in Buffer, found {len(chs)}; run `python -m pipeline buffer setup`")
-    return chs[0]["id"]
+def failed(out):
+    """True when report.json says something went wrong that a human must see (the CI step must not end green)."""
+    rep = json.loads((Path(out) / "report.json").read_text(encoding="utf-8"))
+    b = rep.get("buffer") or {}
+    return b.get("state") in ("error", "skipped") or bool(b.get("problems")) or any((s.get("buffer") or {}).get("state") == "error" for s in rep["songs"])
+
+
+def summary(out):
+    """Markdown lines for the GitHub Actions summary."""
+    rep = json.loads((Path(out) / "report.json").read_text(encoding="utf-8"))
+    b = rep.get("buffer") or {}
+    lines = [f"- buffer: {b.get('state', 'n/a')} {b.get('detail', '')} slots={','.join(b.get('slots', []))} {b.get('timezone', '')}".rstrip()]
+    lines += [f"  - PROBLEM: {p}" for p in b.get("problems", [])]
+    lines += [f"  - {s['song']}: {s['buffer']['state']} {s['buffer'].get('due', '')} {s['buffer'].get('detail', '')}".rstrip() for s in rep["songs"] if s.get("buffer")]
+    return lines
 
 
 def setup(env=os.environ, buf=None, config_path=None):
@@ -258,27 +468,44 @@ def setup(env=os.environ, buf=None, config_path=None):
     return chs
 
 
+def check(cfg, env=os.environ, buf=None, now=None):
+    """Read-only look at the real account: channel state, how many posts are scheduled, where the next 3 would go."""
+    buf, now, bcfg = buf or Buffer(env["BUFFER_API_KEY"]), now or datetime.now(timezone.utc), cfg.get("buffer", {})
+    ch = resolve_channel(buf, bcfg, "plan")
+    tz, hm = slot_config(bcfg, env)
+    sched = buf.scheduled(ch["org"], ch["id"])
+    nxt = free_slots(3, [parse_dt(p["dueAt"]) for p in sched if p.get("dueAt")], tz, hm, now)
+    return {"channel": ch["name"], "queue_paused": ch["paused"], "channel_timezone": ch["timezone"], "slots_timezone": tz.key,
+            "scheduled": len(sched), "next_free": [t.astimezone(tz).isoformat() for t in nxt]}
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="pipeline buffer")
-    ap.add_argument("cmd", choices=["setup", "publish"])
+    ap.add_argument("cmd", choices=["setup", "check", "publish", "summary"])
     ap.add_argument("out", nargs="?")
     ap.add_argument("--state", default=str(ROOT / "out" / "buffer-state.json"))
     a = ap.parse_args(argv)
     cfg = load_config()
     try:
-        if a.cmd == "setup":
+        if a.cmd in ("setup", "check"):
             if not os.environ.get("BUFFER_API_KEY"):
                 print("set BUFFER_API_KEY in the environment first (never paste it in chat)")
                 return 2
+            if a.cmd == "check":
+                print(json.dumps(check(cfg), ensure_ascii=False, indent=1))
+                return 0
             for c in setup():
                 print(f'TikTok channel: {c["name"]} id={c["id"]} (saved to config.json)' + (" QUEUE PAUSED" if c["paused"] else ""))
             return 0
         if not a.out:
-            ap.error("publish needs out/<date>")
+            ap.error("publish/summary need out/<date>")
+        if a.cmd == "summary":
+            print(*summary(a.out), sep="\n")
+            return 0
         res = publish_dir(a.out, cfg, a.state)
         print(json.dumps(res, ensure_ascii=False))
-        return 1 if any(r["state"] == "error" for r in res) else 0  # state "error" never deletes anything
+        return 1 if failed(a.out) else 0  # an error is never swallowed: the workflow step goes red, the mp4 stays in ready/
     except BufferError as e:
         print(f"buffer: {e}")
         return 1

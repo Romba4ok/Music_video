@@ -22,5 +22,5 @@
   },
   "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},
   "author": {"enabled": true, "model": "sonnet", "timeout": 240},
-  "buffer": {"mode": "draft", "channel_id": "", "keep_days": 7, "max_mb": 100}
+  "buffer": {"mode": "draft", "channel_id": "", "timezone": "Asia/Almaty", "slots": ["12:00", "17:00", "21:00"], "posts_per_day": 3, "keep_days": 7, "max_mb": 100, "max_sec": 180}
 }
