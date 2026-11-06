@@ -81,9 +81,9 @@ def pair(w, i, s, d, at):
          f'<radialGradient id="pb{i}"><stop offset="0" stop-color="#ffa6c4"/><stop offset="1" stop-color="#ff4f8b"/></radialGradient></defs>'
          f'<path d="M262 150H558" stroke="#8a6bff" stroke-width="6" stroke-dasharray="2 16" stroke-linecap="round" fill="none"/>'
          f'<g id="pA{i}" style="transform-origin:150px 150px"><circle cx="150" cy="150" r="100" fill="url(#pa{i})"/>'
-         f'<text x="150" y="176" text-anchor="middle" font-size="76" font-weight="900" fill="#fff">{a}</text></g>'
+         f'<text x="150" y="176" text-anchor="middle" font-size="76" font-weight="900" fill="#14141f">{a}</text></g>'
          f'<g id="pB{i}" style="transform-origin:670px 150px"><circle cx="670" cy="150" r="100" fill="url(#pb{i})"/>'
-         f'<text x="670" y="176" text-anchor="middle" font-size="76" font-weight="900" fill="#fff">{b}</text></g>'
+         f'<text x="670" y="176" text-anchor="middle" font-size="76" font-weight="900" fill="#14141f">{b}</text></g>'
          f'<g id="pH{i}">{_heart(264, 124, 2.2)}</g></svg>')
     j = [f'tl.fromTo("#pA{i}",{{opacity:.4,scale:.88}},{{opacity:1,scale:1.05,duration:.35,ease:"back.out(2)"}},{_t(at(.1))});',
          f'tl.fromTo("#pH{i}",{{opacity:0,x:0}},{{opacity:1,x:240,duration:{_t(d * .38)},ease:"power1.inOut"}},{_t(at(.3))});',
@@ -206,7 +206,7 @@ def polaroid(w, i, s, d, at):
          f'<g id="pl{i}" style="transform-origin:165px 170px"><rect x="40" y="16" width="250" height="308" rx="16" fill="#fff" stroke="#e6e1f5" stroke-width="3"/>'
          f'<rect x="58" y="34" width="214" height="226" rx="9" fill="#2b2b4a"/><circle cx="165" cy="124" r="40" fill="#8c8cb8"/>'
          f'<path d="M92 260Q165 160 238 260Z" fill="#8c8cb8"/></g></svg>'
-         f'<div id="yn{i}" style="position:absolute;left:360px;top:70px;font-size:124px;font-weight:900;line-height:1;color:#ff7a3d">{a}</div>'
+         f'<div id="yn{i}" style="position:absolute;left:360px;top:70px;font-size:124px;font-weight:900;line-height:1;color:#c2410c">{a}</div>'
          f'<div style="position:absolute;left:368px;top:206px;font-size:38px;font-weight:700;color:#7a7592">{esc(w.get("label", ""), 22)}</div>')
     j = [f'tl.fromTo("#pl{i}",{{rotation:-14,scale:.8,opacity:0}},{{rotation:-5,scale:1,opacity:1,duration:.5,ease:"back.out(1.6)"}},{_t(s + .05)});',
          _count(i, "y", a, b, s + .15, d * .7, "Math.round(V)", "power1.inOut")]

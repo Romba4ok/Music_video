@@ -58,8 +58,7 @@ def refragment(analysis, cfg, popular_line=""):
     """Re-clean saved lines and recompute chorus + fragment without running whisper again."""
     lines = clean_lines(analysis["lines"], cfg["language"])
     chorus = find_chorus(lines)
-    frag = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
-    return dict(analysis, lines=lines, fragment=frag)
+    return dict(analysis, lines=lines, fragment=pick_reliable(lines, popular_line, cfg, chorus))
 
 
 def beats(path):
@@ -116,7 +115,7 @@ def _match_popular(lines, popular, min_ratio=0.6):
     return (bi, round(best, 2)) if best >= min_ratio else (None, round(best, 2))
 
 
-def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, chorus=None):
+def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, chorus=None, anchor_idx=None):
     """Window of whole lines containing the most popular line (else the top chorus). Ends on a phrase boundary."""
     if not lines:
         return None
@@ -124,7 +123,9 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
     anchor, reason = None, ""
     pin = popular_line.startswith("=")  # '=text' (from 'Artist - Title [text].mp3'): the fragment starts exactly at that line
     popular_line = popular_line.lstrip("=").strip()
-    if popular_line:
+    if anchor_idx is not None:  # a candidate window that starts exactly at this line (used when looking for a more reliable window)
+        anchor, reason, pin = anchor_idx, "matched candidate line", True
+    elif popular_line:
         anchor, ratio = _match_popular(lines, popular_line)
         if pin:  # a line that itself begins with the phrase wins over a pair match that only contains it
             anchor = next((i for i, l in enumerate(lines) if norm(l["text"]).startswith(norm(popular_line))), anchor)
@@ -160,17 +161,52 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
             "length": round(length(first, last), 2), "reason": reason + ("; start pinned by file name" if pin else ""), "pinned": pin}
 
 
+def low_ratio(lines, frag, thr):
+    """Share of words in the fragment that whisper recognised with probability < thr (the same measure QA uses)."""
+    ws = [w for ln in lines[frag["first"]: frag["last"] + 1] for w in ln["words"]]
+    return sum(1 for w in ws if w["p"] < thr) / max(1, len(ws))
+
+
+def pick_reliable(lines, popular_line, cfg, chorus=None):
+    """pick_fragment, but when the chosen window has too many low-confidence words, look for another window of the same song
+    (nearest to the first choice) that stays under the limit. Words are never replaced or guessed: nothing fits -> the first choice is
+    returned with `low_ratio` above the limit, and the caller refuses the song instead of rendering text the recogniser was unsure about."""
+    thr, limit = cfg["whisper"]["min_confidence"], cfg["whisper"].get("max_low_ratio", 0.15)
+    chorus = chorus if chorus is not None else find_chorus(lines)
+    base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
+    if not base:
+        return None
+    base["low_ratio"] = round(low_ratio(lines, base, thr), 3)
+    if base["low_ratio"] <= limit or base.get("pinned"):  # a start pinned in the file name is the owner's choice
+        return base
+    best = None
+    for i in sorted(range(len(lines)), key=lambda k: abs(k - base["first"])):
+        c = pick_fragment(lines, "", cfg["min_len"], cfg["max_len"], chorus=chorus, anchor_idx=i)
+        if c["length"] < cfg["min_len"]:
+            continue
+        c["low_ratio"] = round(low_ratio(lines, c, thr), 3)
+        if c["low_ratio"] <= limit:
+            best = c
+            break
+    if best:
+        best["pinned"] = False
+        best["reason"] = f'{base["reason"]}; moved to line {best["first"]}: first choice had {base["low_ratio"]:.0%} low-confidence words (limit {limit:.0%})'
+        return best
+    base["reason"] += f'; no window under {limit:.0%} low-confidence words (best first choice {base["low_ratio"]:.0%})'
+    return base
+
+
 def analyze(path, popular_line="", cfg=None):
     cfg = cfg or load_config()
     lines = transcribe(path, cfg)
     b = beats(path)
     chorus = find_chorus(lines)
-    frag = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
+    frag = pick_reliable(lines, popular_line, cfg, chorus)
     low = sum(1 for l in lines for w in l["words"] if w["p"] < cfg["whisper"]["min_confidence"])
     nwords = sum(len(l["words"]) for l in lines)
     summary = {"bpm": b["bpm"], "audio_duration": b["duration"], "lines": len(lines), "words": nwords,
                "low_confidence_words": low, "popular_line_found": bool(frag and "matched" in frag["reason"]),
-               "fragment": frag and {k: frag[k] for k in ("start", "end", "length", "reason")},
+               "fragment": frag and {k: frag[k] for k in ("start", "end", "length", "reason", "low_ratio")},
                "chorus_candidates": [{"start": c["start"], "end": c["end"], "repeats": c["repeats"], "text": c["text"][:60]}
                                      for c in chorus[:3]]}
     return {"summary": summary, "lines": lines, "beats": b["beats"], "fragment": frag}

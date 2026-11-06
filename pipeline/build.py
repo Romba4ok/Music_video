@@ -68,7 +68,7 @@ def build_one(d, n, cfg):
             raise FileNotFoundError(f"audio file missing: {spec['audio']}")
         video = render.render(spec, plan, d / f"work-{n}", cfg, audio_src)
     except Exception as e:
-        return sid, [("FAIL", "render", f"{type(e).__name__}: {str(e)[:450]}")], None
+        return sid, [("FAIL", "render", f"{type(e).__name__}: {str(e)[:900]}")], None
     lines = qa.run_checks(spec, video, plan, cfg)
     if any(s == "FAIL" for s, _, _ in lines):
         return sid, lines, None

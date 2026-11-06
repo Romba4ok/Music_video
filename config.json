@@ -14,7 +14,7 @@
   "handle": "vybex",
   "default_hashtags": ["#казахстан", "#рэп", "#смысл"],
   "audio_dir": "accounts/main/audio",
-  "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5},
+  "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5, "max_low_ratio": 0.15},
   "licenses_allowed": ["cc0", "pdm", "by"],
   "sources": {
     "order": ["local", "openverse", "jamendo"],

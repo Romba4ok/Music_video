@@ -24,7 +24,10 @@ def build_prompt(entry, lines, cfg):
     tpl = (ROOT / "prompts" / "widgets.md").read_text(encoding="utf-8")
     txt = "\n".join(f'{i} | {l["start"]:.1f}–{l["end"]:.1f} | {l["text"]}' for i, l in enumerate(lines))
     lo, hi = cfg["min_len"], cfg["max_len"]
+    avoid = entry.get("avoid_kinds") or []  # kinds the other videos of today's batch already use: ask for different ones
+    note = f"Другие ролики сегодня уже используют: {', '.join(avoid)}. Выбирай другие виды и другие art." if avoid else ""
     return (tpl.replace("{{ARTIST}}", entry.get("artist", "")).replace("{{TITLE}}", entry.get("title", "")).replace("{{LINES}}", txt)
+            .replace("{{AVOID}}", note)
             .replace("{{MIN}}", str(lo)).replace("{{MAX}}", str(hi)).replace("{{TARGET}}", f"{lo + 4}–{lo + 12}"))
 
 

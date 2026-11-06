@@ -133,8 +133,8 @@ def test_batch_survives_failures_and_reports(tmp_path):
         (out / f"work-{n}" / "final.mp4").write_bytes(b"v")
         return "id", [("PASS", "x", "")], out / "v.mp4"
 
-    stages = {"fetch": fetch, "analyze": lambda a, p, c: {"fragment": frag, "lines": [], "beats": [], "summary": {}},
-              "build": build_stub}
+    stages = {"fetch": fetch, "check_audio": lambda a, m: (a, []),
+              "analyze": lambda a, p, c: {"fragment": frag, "lines": [], "beats": [], "summary": {}}, "build": build_stub}
     rep = batch.run_batch("tiktok", 1, "2026-11-05", CFG, root=tmp_path, stages=stages)
     assert rep["succeeded"] == 1 and built == [1]
     songs = {r["song"]: r for r in rep["songs"]}

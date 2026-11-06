@@ -119,21 +119,32 @@ def npx():
     return shutil.which("npx") or shutil.which("npx.cmd") or "npx"
 
 
+# HyperFrames files these as warnings in some versions, but a card nobody can read is a failed video here.
+BLOCKING = {"text_not_painted", "contrast_aa_failure", "text_occluded"}
+
+
 def check(workdir):
-    """HyperFrames lint. Returns (ok, errors)."""
+    """HyperFrames check (lint, runtime, layout, motion, contrast, craft, audio) on workdir/index.html. Returns (ok, errors).
+    Errors = every finding with severity error plus the BLOCKING codes. Other warnings are not hidden: the full report is saved as
+    workdir/check.json and the count is printed. Nothing is switched off."""
     rc, out = _run([npx(), "hyperframes", "check", "--json"], stdout_only=True, cwd=workdir)
     try:
         data = json.loads(out[out.index("{"):])
     except Exception:
         return False, ["check output unreadable: " + out[-300:]]
-    errs = []
+    (Path(workdir) / "check.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    errs, warns = [], 0
     for sec in ("lint", "runtime", "layout", "motion", "contrast", "craft", "audio"):
         for f in (data.get(sec) or {}).get("findings", []):
-            if f.get("severity") == "error":
-                errs.append(f'{sec}:{f.get("code")}: {f.get("message")} Fix: {f.get("fixHint")}'[:300])
+            if f.get("severity") == "error" or f.get("code") in BLOCKING:
+                what = f'{f.get("selector", "")} "{str(f.get("text", ""))[:30]}" ' if f.get("selector") else ""
+                errs.append(f'{sec}:{f.get("code")}: {what}{f.get("message")} Fix: {f.get("fixHint") or f.get("suggestedColor") or "see check.json"}'[:300])
+            elif f.get("severity") == "warning":
+                warns += 1
     if not errs and not data.get("ok"):
         bad = [k for k, v in data.items() if isinstance(v, dict) and v.get("ok") is False]
         errs = ["check ok=false in: " + ",".join(bad) + " " + json.dumps({k: data[k] for k in bad}, ensure_ascii=False)[:500]]
+    print(f"hyperframes check: {'FAIL' if errs else 'ok'}, {len(errs)} blocking, {warns} other warnings (check.json)")
     return not errs and bool(data.get("ok")), errs
 
 
@@ -157,7 +168,7 @@ def render(spec, plan, workdir, cfg, audio_src=None):
     (wd / "index.html").write_text(page, encoding="utf-8")
     ok, errs = check(wd)
     if not ok:
-        raise RuntimeError("hyperframes check failed: " + "; ".join(errs)[:600])
+        raise RuntimeError("hyperframes check failed: " + "; ".join(errs)[:900])
     silent = wd / "silent.mp4"
     rc, log = _run([npx(), "hyperframes", "render", "-o", str(silent), "--fps", str(cfg["fps"]), "--quality", "looks"], cwd=wd)
     if rc or not silent.exists():

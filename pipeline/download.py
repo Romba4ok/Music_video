@@ -131,6 +131,69 @@ def ensure_audio(path, rights_confirmed=False):
     return path
 
 
+class BadAudio(Exception):
+    """The file is not usable audio (unreadable, no audio stream, too short, or damaged beyond repair)."""
+
+
+def _decode_report(path):
+    """(duration_from_container, decoded_seconds, decoder_error_lines) via ffprobe + a full ffmpeg decode to nowhere."""
+    pr = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        info = json.loads(pr.stdout or "{}")
+    except ValueError:
+        info = {}
+    if pr.returncode or not info.get("streams"):
+        raise BadAudio("ffprobe cannot read the file: " + ((pr.stderr or "").strip()[-150:] or "no streams"))
+    if not any(s.get("codec_type") == "audio" for s in info["streams"]):
+        raise BadAudio("no audio stream")
+    try:
+        dur = float(info["format"]["duration"])
+    except (KeyError, TypeError, ValueError):
+        raise BadAudio("container has no duration") from None
+    dr = subprocess.run(["ffmpeg", "-v", "error", "-nostats", "-i", str(path), "-vn", "-progress", "pipe:1", "-f", "null", "-"],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    done = [int(x.split("=")[1]) for x in (dr.stdout or "").splitlines() if x.startswith("out_time_us=") and x.split("=")[1].lstrip("-").isdigit()]
+    errs = [ln for ln in (dr.stderr or "").splitlines() if ln.strip()]
+    if dr.returncode:
+        raise BadAudio("ffmpeg cannot decode the file: " + (errs[-1][-150:] if errs else f"exit {dr.returncode}"))
+    return dur, (max(done) / 1e6 if done else 0.0), errs
+
+
+def check_audio(path, min_sec=20.0, max_sec=1500.0, fixdir=None):
+    """Validate an audio file before it is analysed. Returns (usable_path, notes).
+    - unreadable / no audio / shorter than min_sec / longer than max_sec -> BadAudio
+    - decoder complaints (e.g. 'Illegal Audio-MPEG-Header', 'Header missing') but >= 95% of the track decodes -> accepted, noted
+    - less than 95% decodes -> one re-encode with ffmpeg (bad frames dropped) into fixdir; the copy must pass the same test."""
+    path = Path(path)
+    dur, got, errs = _decode_report(path)
+    notes = [f"{len(errs)} decoder warning(s): {errs[0][-110:]}"] if errs else []
+    if got < 0.95 * dur:
+        fixdir = Path(fixdir or Path(__file__).resolve().parent.parent / "out" / "audio-fixed")
+        fixdir.mkdir(parents=True, exist_ok=True)
+        fixed = fixdir / (path.stem + ".fixed.m4a")
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-err_detect", "ignore_err", "-i", str(path), "-vn", "-c:a", "aac", "-b:a", "192k", str(fixed)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode or not fixed.exists():
+            raise BadAudio(f"damaged ({got:.0f}s of {dur:.0f}s decode) and ffmpeg could not repair it")
+        try:
+            dur2, got2, _ = _decode_report(fixed)
+        except BadAudio as e:
+            raise BadAudio(f"damaged and the repaired copy is bad too: {e}") from None
+        if got2 < 0.95 * dur2:
+            raise BadAudio(f"damaged beyond repair ({got:.0f}s of {dur:.0f}s decode)")
+        notes.append(f"damaged file ({got:.0f}s of {dur:.0f}s decoded): re-encoded to {fixed.name}")
+        side = Path(str(path) + ".license.json")
+        if side.exists():
+            shutil.copy2(side, str(fixed) + ".license.json")
+        path, dur = fixed, dur2
+    if dur < min_sec:
+        raise BadAudio(f"track is {dur:.0f}s, shorter than the {min_sec:.0f}s a clip needs")
+    if dur > max_sec:
+        raise BadAudio(f"track is {dur:.0f}s, longer than {max_sec:.0f}s (probably not a single song)")
+    return path, notes
+
+
 if __name__ == "__main__":
     import argparse
     import sys

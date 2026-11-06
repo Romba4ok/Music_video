@@ -108,7 +108,8 @@ def run_checks(spec, video, plan, cfg):
         words = sum(len(c["words"]) for c in cards)
         low = sum(len(c["low_conf"]) for c in cards)
         ratio = low / max(1, words)
-        add(ratio <= 0.15, "lyrics_confidence", f"{low}/{words} low-confidence words ({ratio:.0%}); limit 15%")
+        limit = cfg["whisper"].get("max_low_ratio", 0.15)
+        add(ratio <= limit, "lyrics_confidence", f"{low}/{words} low-confidence words ({ratio:.0%}); limit {limit:.0%}")
         short = [i for i, c in enumerate(cards) if c["end"] - c["start"] < 0.5]
         add(not short, "cards_readable", f"too short: {short[:5]}" if short else "")
     else:

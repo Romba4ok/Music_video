@@ -121,7 +121,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     cfg = dict(cfg or load_config())
     if lang:
         cfg["language"] = lang
-    st = {"fetch": fetch_audio, "analyze": analyze_mod.analyze, "build": build.build_one, "author": author_mod.author}
+    st = {"fetch": fetch_audio, "check_audio": download.check_audio, "analyze": analyze_mod.analyze, "build": build.build_one, "author": author_mod.author}
     st.update(stages or {})
     acc = root / "accounts" / "main"
     queue = parse_queue((acc / "queue.md").read_text(encoding="utf-8")) if (acc / "queue.md").exists() else []
@@ -129,7 +129,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     used, recent = parse_log((acc / "log.md").read_text(encoding="utf-8")) if (acc / "log.md").exists() else (set(), [])
     out = root / "out" / date
     out.mkdir(parents=True, exist_ok=True)
-    report, done = [], 0
+    report, done, day_kinds = [], 0, set()
     for entry in queue:
         if done >= count:
             break
@@ -147,15 +147,33 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
                 continue
             rec["stages"]["fetch"] = "ok"
             rec["audio_name"] = Path(audio).name
+            try:  # a broken file must not reach whisper (minutes of CPU) or stop the other songs
+                audio, notes = st["check_audio"](audio, cfg["min_len"])
+            except download.BadAudio as e:
+                rec["stages"]["fetch"] = "bad_audio"
+                rec["note"] = f"audio file rejected: {e}"
+                report.append(rec)
+                continue
+            if notes:
+                rec["audio_notes"] = notes
             analysis = st["analyze"](audio, entry["popular_line"], cfg)
-            rec["stages"]["analyze"] = "ok" if analysis.get("fragment") else "no_fragment"
+            fr = analysis.get("fragment")
+            rec["stages"]["analyze"] = "ok" if fr else "no_fragment"
+            if fr and fr.get("low_ratio", 0) > cfg["whisper"].get("max_low_ratio", 0.15):  # no window with reliably recognised words: do not render guesses
+                rec["stages"]["analyze"] = "low_confidence"
+                rec["note"] = f'{fr["low_ratio"]:.0%} of the words in the best window are low-confidence (limit {cfg["whisper"].get("max_low_ratio", 0.15):.0%}); not rendered'
+                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
+                report.append(rec)
+                continue
             if not analysis.get("fragment"):
                 (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
                 report.append(rec)
                 continue
             rel = str(Path(audio).resolve().relative_to(root)).replace("\\", "/") if mode == "auto" else None
             spec = autospec(entry, n, date, recent, cfg, mode, rel, trend_tags)
-            analysis, spec, rec["stages"]["author"] = st["author"](entry, analysis, spec, cfg)  # Claude writes cards/hook; falls back to auto
+            entry["avoid_kinds"] = sorted(day_kinds)
+            analysis, spec, rec["stages"]["author"] = st["author"](entry, analysis, spec, cfg)
+            day_kinds |= {w.get("kind") for w in spec.get("widgets") or [] if w.get("kind")}  # Claude writes cards/hook; falls back to auto
             (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
             sid, lines, video = st["build"](out, n, cfg)
