@@ -16,6 +16,10 @@ on:
       buffer:
         description: "Buffer mode for this run only: plan (checks, creates nothing) | draft | queue | off. Empty = repo variable VYBEX_BUFFER, else draft"
         default: ""
+# Two triggers can fire on the same morning (GitHub cron + an external pinger via workflow_dispatch): never run two at once, the second waits.
+concurrency:
+  group: generate
+  cancel-in-progress: false
 env:
   HYPERFRAMES_NO_UPDATE_CHECK: "1"
   HYPERFRAMES_SKIP_SKILLS: "1"
