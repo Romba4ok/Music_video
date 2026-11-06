@@ -4,7 +4,7 @@ name: generate
 # No "push" trigger: a code push must never generate videos or put posts into the TikTok queue.
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "25 5 * * *"
   workflow_dispatch:
     inputs:
       mode:
