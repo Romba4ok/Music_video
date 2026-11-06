@@ -167,32 +167,38 @@ def low_ratio(lines, frag, thr):
     return sum(1 for w in ws if w["p"] < thr) / max(1, len(ws))
 
 
+def max_gap(lines, frag):
+    """Longest pause between two neighbouring lines inside the fragment (an instrumental break shows as an empty screen)."""
+    return max((lines[k + 1]["start"] - lines[k]["end"] for k in range(frag["first"], frag["last"])), default=0.0)
+
+
 def pick_reliable(lines, popular_line, cfg, chorus=None):
     """pick_fragment, but when the chosen window has too many low-confidence words, look for another window of the same song
     (nearest to the first choice) that stays under the limit. Words are never replaced or guessed: nothing fits -> the first choice is
     returned with `low_ratio` above the limit, and the caller refuses the song instead of rendering text the recogniser was unsure about."""
-    thr, limit = cfg["whisper"]["min_confidence"], cfg["whisper"].get("max_low_ratio", 0.15)
+    thr, limit, gap_limit = cfg["whisper"]["min_confidence"], cfg["whisper"].get("max_low_ratio", 0.15), cfg["whisper"].get("max_gap_sec", 5.0)
     chorus = chorus if chorus is not None else find_chorus(lines)
     base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
     if not base:
         return None
-    base["low_ratio"] = round(low_ratio(lines, base, thr), 3)
-    if base["low_ratio"] <= limit or base.get("pinned"):  # a start pinned in the file name is the owner's choice
+    base["low_ratio"], base["max_gap"] = round(low_ratio(lines, base, thr), 3), round(max_gap(lines, base), 1)
+    if (base["low_ratio"] <= limit and base["max_gap"] <= gap_limit) or base.get("pinned"):  # a start pinned in the file name is the owner's choice
         return base
     best = None
     for i in sorted(range(len(lines)), key=lambda k: abs(k - base["first"])):
         c = pick_fragment(lines, "", cfg["min_len"], cfg["max_len"], chorus=chorus, anchor_idx=i)
         if c["length"] < cfg["min_len"]:
             continue
-        c["low_ratio"] = round(low_ratio(lines, c, thr), 3)
-        if c["low_ratio"] <= limit:
+        c["low_ratio"], c["max_gap"] = round(low_ratio(lines, c, thr), 3), round(max_gap(lines, c), 1)
+        if c["low_ratio"] <= limit and c["max_gap"] <= gap_limit:
             best = c
             break
     if best:
         best["pinned"] = False
-        best["reason"] = f'{base["reason"]}; moved to line {best["first"]}: first choice had {base["low_ratio"]:.0%} low-confidence words (limit {limit:.0%})'
+        best["reason"] = (f'{base["reason"]}; moved to line {best["first"]}: first choice had {base["low_ratio"]:.0%} low-confidence words '
+                          f'(limit {limit:.0%}) and a {base["max_gap"]:.0f}s pause (limit {gap_limit:.0f}s)')
         return best
-    base["reason"] += f'; no window under {limit:.0%} low-confidence words (best first choice {base["low_ratio"]:.0%})'
+    base["reason"] += f'; no window within limits: {base["low_ratio"]:.0%} low-confidence words (limit {limit:.0%}), {base["max_gap"]:.0f}s pause (limit {gap_limit:.0f}s)'
     return base
 
 

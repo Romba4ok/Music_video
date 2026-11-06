@@ -117,7 +117,7 @@ def test_reliable_window_keeps_first_choice_when_it_is_fine():
 def test_no_reliable_window_is_reported_not_hidden():
     lines = _lines(low=set(range(16)))
     f = analyze.pick_reliable(lines, "", CFG20)
-    assert f["low_ratio"] == 1.0 and "no window under" in f["reason"]
+    assert f["low_ratio"] == 1.0 and "no window within limits" in f["reason"]
 
 
 def test_pinned_start_is_the_owners_choice_even_if_unsure():
@@ -304,3 +304,77 @@ def test_batch_tells_the_author_what_earlier_videos_used(tmp_path):
     stages["author"] = author
     batch.run_batch("tiktok", 2, "2026-11-06", CFG, root=tmp_path, stages=stages)
     assert seen == [[], ["pair", "ring"]]
+
+
+# ---- Claude-drawn pictures (kind "draw")
+from pipeline import author, svg_safe  # noqa: E402
+
+GOOD = ('<rect width="800" height="420" fill="#1b1f5c"/><defs><linearGradient id="lg"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#f0a"/></linearGradient></defs>'
+        '<g transform="translate(400 210) rotate(10)"><circle r="80" fill="url(#lg)"/><path d="M-60 80L0 -90L60 80Z" fill="#ffd66b" stroke="#fff" stroke-width="6"/></g>')
+
+
+def test_svg_clean_keeps_shapes_and_gradients():
+    out = svg_safe.clean(GOOD)
+    assert out and out.count("<circle") == 1 and 'id="lg"' in out and "url(#lg)" in out and "rotate(10)" in out
+    assert svg_safe.clean(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420">{GOOD}</svg>')  # a full <svg> wrapper is unwrapped
+    assert svg_safe.clean(out) == out  # idempotent: the renderer re-cleans what the author already cleaned
+
+
+@pytest.mark.parametrize("bad", [
+    "", "   ", "<rect", "<script>alert(1)</script>", '<rect width="5" height="5" onclick="x()"/><script/>', '<image href="http://evil/x.png"/>',
+    '<use href="#a"/>', '<foreignObject><div/></foreignObject>', '<style>*{}</style><rect width="1" height="1"/>', "<!DOCTYPE x><rect/>",
+    '<!ENTITY a "b">', '<rect width="1" height="1" fill="&lol;"/>', "<a href='x'><rect width='1' height='1'/></a>",
+    "<rect width='1' height='1'/>" * 200, "<text>только текст</text>"])
+def test_svg_clean_rejects_dangerous_or_unusable(bad):
+    assert svg_safe.clean(bad) is None
+
+
+def test_svg_clean_strips_dangerous_attributes_but_keeps_the_shape():
+    out = svg_safe.clean('<rect width="10" height="10" onclick="x()" style="x:y" class="a" fill="url(http://evil)" id="r" transform="evil(1)" stroke="red"/>')
+    assert out == '<rect width="10" height="10" stroke="red"></rect>'  # onclick/style/class/id(on a rect)/bad transform dropped; bad url() dropped
+    t = svg_safe.clean('<g><title>x</title><text x="1">надпись</text><rect width="9" height="9"/></g>')
+    assert t == '<g><rect width="9" height="9"></rect></g>'  # text in a picture is dropped
+
+
+def test_scope_prefixes_gradient_ids_per_card():
+    m = svg_safe.scope(svg_safe.clean(GOOD), 7)
+    assert 'id="dr7_lg"' in m and "url(#dr7_lg)" in m and 'id="lg"' not in m
+
+
+def test_author_turns_a_bad_drawing_into_a_template_picture_and_keeps_good_ones():
+    ws = author.sanitize_widgets([
+        {"lines": [0], "kind": "draw", "svg": GOOD, "motion": "sway", "art": "moon", "app": "Заметки"},
+        {"lines": [1], "kind": "draw", "svg": "<script>1</script>", "art": "lock"},
+        {"lines": [2], "kind": "draw"},
+        {"lines": [3], "kind": "draw", "svg": GOOD, "motion": "explode"}], 4)
+    assert ws[0]["kind"] == "draw" and ws[0]["motion"] == "sway" and "<circle" in ws[0]["svg"]
+    assert ws[1] == {"lines": [1], "kind": "scene", "art": "lock"}  # nothing unsafe survives; the line still gets a picture
+    assert ws[2]["kind"] == "scene"
+    assert ws[3]["kind"] == "draw" and "motion" not in ws[3]  # unknown motion ignored (renderer defaults to float)
+
+
+def test_draw_card_renders_scoped_svg_and_a_loop_and_falls_back():
+    h, j = rw._body("draw", {"svg": GOOD, "motion": "pulse"}, 4, 3.0, 2.5, "x")
+    assert 'id="dr4"' in h and "dr4_lg" in h and "<script" not in h and j and "scale" in j[0]
+    h2, j2 = rw._body("draw", {"svg": "<script/>", "art": "flame"}, 5, 3.0, 2.5, "x")  # hand-edited spec: bad drawing never reaches the page
+    assert "<script" not in h2 and 'id="fl5"' in h2
+    assert all(rw._draw_anim(m, 1, 0, 2)[0].startswith('tl.fromTo("#dr1"') for m in (*svg_safe.MOTIONS, None))
+
+
+def test_prompt_explains_drawing_and_wants_no_text_in_pictures():
+    p = author.build_prompt({"artist": "A", "title": "T"}, [{"start": 0, "end": 3, "text": "строка", "words": []}], CFG)
+    assert "draw: svg" in p and "text/tspan" in p and "0 0 800 420" in p
+
+
+def test_window_with_a_long_instrumental_pause_is_avoided():
+    lines = _lines(low=set())
+    for k in range(6, 16):  # a 12 s break after line 5: lines 6.. start later
+        lines[k]["start"] += 12
+        lines[k]["end"] += 12
+        for w in lines[k]["words"]:
+            w["s"] += 12
+            w["e"] += 12
+    base = analyze.pick_fragment(lines, "", 20, 40)  # the plain logic grows the chorus window across the break
+    assert analyze.max_gap(lines, base) > 5
+    f = analyze.pick_reliable(lines, "", CFG20)
+    assert f["max_gap"] <= 5 and f["low_ratio"] <= .15

@@ -11,6 +11,7 @@ import math
 import random
 import zlib
 
+from . import svg_safe
 from . import widget_kinds as wk
 
 PAL = {  # spec palette -> (bg1, bg2, bg3, accent, title gradient a, b)
@@ -20,7 +21,7 @@ PAL = {  # spec palette -> (bg1, bg2, bg3, accent, title gradient a, b)
     "contrast": ("#e0fff3", "#e0f0ff", "#efe6ff", "#14956f", "#1fb98a", "#3b8bff"),
 }
 HEART = "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
-KINDS = ("scene", "counter", "search", "camera", "chat", "dots", "versus") + wk.NEW_KINDS
+KINDS = ("scene", "counter", "search", "camera", "chat", "dots", "versus", "draw") + wk.NEW_KINDS  # draw = a picture Claude drew as SVG
 
 # (art key, default app title, icon colour, stems that pick this art for a line)
 ARTS = [
@@ -193,6 +194,13 @@ def _camera_art(i, w):
                if bub else ""))
 
 
+def _draw_anim(motion, i, s, d):
+    """One of four gentle loops for a drawn picture (Claude only names it; the numbers are ours)."""
+    reps = max(1, int(d / 1.1))
+    fr, to = {"pulse": ("scale:.97", "scale:1.04"), "sway": ("rotation:-3", "rotation:3"), "drift": ("x:-18", "x:18")}.get(motion, ("y:8", "y:-10"))
+    return [f'tl.fromTo("#dr{i}",{{{fr}}},{{{to},duration:1.1,ease:"sine.inOut",yoyo:true,repeat:{reps}}},{s});']
+
+
 def _art_anim(key, i, s, d):
     j = []
     if key == "sunset":
@@ -294,6 +302,14 @@ def _body(kind, w, i, s, d, text):
         j.append(f'const dd{i}={{v:{a}}};tl.to(dd{i},{{v:{b},duration:{round(d * .6, 3)},ease:"power3.out",onUpdate(){{'
                  f'document.getElementById("dn{i}").textContent={_fmt_js(f"dd{i}.v")};}}}},{s + .2:.3f});')
         j.append(f'tl.fromTo("#ch{i}",{{opacity:0,scale:.3,transformOrigin:"50% 50%"}},{{opacity:1,scale:1,duration:.45,ease:"back.out(2)"}},{at(.6)});')
+    elif kind == "draw":
+        markup = svg_safe.clean(w.get("svg"))  # re-checked here: a hand-edited spec must not bypass the allowlist
+        if markup:
+            h = (f'<div class="sc"><svg class="cart" style="width:820px;height:340px" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice">'
+                 f'<g id="dr{i}" style="transform-origin:400px 210px">{svg_safe.scope(markup, i)}</g></svg></div>')
+            j.extend(_draw_anim(w.get("motion"), i, s, d))
+        else:  # unusable drawing -> a template picture, the video still renders
+            return _body("scene", {k: v for k, v in w.items() if k not in ("svg", "kind")}, i, s, d, text)
     elif kind == "versus":
         keys = [w.get("art") if w.get("art") in ART_KEYS else "sunset", w.get("art2") if w.get("art2") in ART_KEYS else "rain"]
         labs = [w.get("label", ""), w.get("label2", "")]

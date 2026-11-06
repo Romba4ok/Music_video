@@ -14,13 +14,13 @@
   "handle": "vybex",
   "default_hashtags": ["#казахстан", "#рэп", "#смысл"],
   "audio_dir": "accounts/main/audio",
-  "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5, "max_low_ratio": 0.15},
+  "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5, "max_low_ratio": 0.15, "max_gap_sec": 5.0},
   "licenses_allowed": ["cc0", "pdm", "by"],
   "sources": {
     "order": ["local", "openverse", "jamendo"],
     "ytdlp_allowed_domains": ["youtube.com", "youtu.be", "archive.org"]
   },
   "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},
-  "author": {"enabled": true, "model": "sonnet", "timeout": 240},
+  "author": {"enabled": true, "model": "sonnet", "timeout": 480},
   "buffer": {"mode": "draft", "channel_id": "", "timezone": "Asia/Almaty", "slots": ["12:00", "17:00", "21:00"], "posts_per_day": 3, "keep_days": 7, "max_mb": 100, "max_sec": 180}
 }

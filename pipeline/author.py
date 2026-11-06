@@ -10,11 +10,12 @@ import shutil
 import subprocess
 import tempfile
 
+from . import svg_safe
 from .common import ROOT
 from .render_widgets import ART_KEYS, KINDS
 
 KEYS = ("kind", "app", "cat", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
-        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast")
+        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "motion")
 NUM = ("from", "to", "fill", "zoom", "shift")  # `from`/`to` are numbers for most kinds and place names for route
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -82,6 +83,14 @@ def sanitize_widgets(widgets, n_lines):
                 nv = _notify(v)
                 if nv:
                     o[k] = nv
+            elif k == "svg":
+                if w["kind"] == "draw":
+                    sv = svg_safe.clean(v)
+                    if sv:
+                        o[k] = sv
+            elif k == "motion":
+                if v in svg_safe.MOTIONS:
+                    o[k] = v
             elif k == "msgs":
                 ms = [{"from": "me" if m.get("from") == "me" else "her", "text": _s(m.get("text", ""), 46)} for m in v if isinstance(m, dict)][:3]
                 if ms:
@@ -105,6 +114,8 @@ def sanitize_widgets(widgets, n_lines):
                     pass
             else:
                 o[k] = _s(v)
+        if o["kind"] == "draw" and "svg" not in o:
+            o["kind"] = "scene"  # the drawing was missing or not allowed: show a template picture instead
         used |= set(ln)
         out.append(o)
     return out
