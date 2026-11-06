@@ -1,0 +1,16 @@
+name: Test Cron
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check schedule
+        run: |
+          echo "Scheduled run works!"
+          date -u
+          echo "Event: $GITHUB_EVENT_NAME"
