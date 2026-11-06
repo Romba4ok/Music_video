@@ -435,3 +435,19 @@ def test_refine_is_off_without_a_different_model():
     for cfg in (CFG, dict(CFG, whisper=dict(CFG["whisper"], refine_model=""))):
         cfg = dict(cfg, whisper=dict(cfg["whisper"], **({"refine_model": cfg["whisper"]["model"]} if cfg is CFG else {})))
         assert analyze.refine_fragment("x.mp3", lines, frag, cfg) == (lines, frag, "")
+
+
+def test_muted_text_greys_read_on_pastel_backgrounds_too():
+    import pathlib
+    src = "".join(pathlib.Path(f).read_text(encoding="utf-8") for f in ("pipeline/render_widgets.py", "pipeline/widget_kinds.py"))
+    for old in ("#7a7592", "#7a7a92", "#6b6585"):  # these measured 2.8-2.97:1 on the pastel background (a real HyperFrames failure)
+        assert old not in src
+    assert rw.contrast("#5f5a7c", "#f1c7e2") >= 4 and rw.contrast("#5f5a7c", rw.CARD_BG) >= 6
+
+
+def test_text_on_the_dark_island_banner_stays_light():
+    css = rw.build_html.__code__  # noqa: F841 - the CSS lives inside build_html's template; check the rendered page instead
+    h = _page("dusk", ["pair"])
+    now = h[h.index(".now{"):].split("}")[0]
+    col = now.split("color:")[1].split(";")[0]
+    assert rw.contrast(col, "#14141f") >= 4.5  # "сейчас" sits on the dark banner: darkening every grey made it unreadable

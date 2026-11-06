@@ -690,7 +690,7 @@ html,body{{margin:0;background:#000;}}
 .cr{{position:absolute;left:0;top:0;width:56px;height:56px;border-radius:28px;opacity:0;z-index:5}}
 .clip{{position:absolute}}
 .icredit{{text-align:center;font-weight:900;font-size:58px;color:{INK}}}
-.isub{{text-align:center;font-weight:700;font-size:40px;color:#7a7592}}
+.isub{{text-align:center;font-weight:700;font-size:40px;color:#5f5a7c}}
 .fbig{{text-align:center;font-weight:900;font-size:88px;line-height:1.05;letter-spacing:-1px;color:{readable(ta)};text-shadow:0 6px 24px rgba(255,255,255,.8)}}
 .stat{{position:absolute;font-weight:800;font-size:34px;color:{INK}}}
 .batt{{position:absolute;width:62px;height:28px;box-sizing:border-box;border:3px solid {INK};border-radius:9px;overflow:hidden}}
@@ -699,7 +699,7 @@ html,body{{margin:0;background:#000;}}
 .itxt{{display:flex;flex-direction:column;flex:1;min-width:0}}
 .itxt b{{color:#fff;font-size:26px;white-space:nowrap}}
 .itxt span{{color:#a4a4bb;font-size:21px;font-weight:600;white-space:nowrap}}
-.now{{color:#7a7a92;font-size:18px;font-weight:600;flex:none}}
+.now{{color:#b9b6d0;font-size:18px;font-weight:600;flex:none}}
 .eqs{{position:relative;width:44px;height:44px;flex:none}}
 .eq{{position:absolute;bottom:0;width:8px;height:44px;border-radius:4px;background:{ta};transform-origin:50% 100%}}
 .wcard{{position:absolute;left:0;top:0;width:900px;box-sizing:border-box;padding:30px 40px;border-radius:60px;background:rgba(255,255,255,.96);
@@ -716,7 +716,7 @@ html,body{{margin:0;background:#000;}}
 .cart{{width:330px;height:340px;display:block;border-radius:30px;overflow:hidden}}
 .row{{display:flex;gap:30px;align-items:center;height:340px}}
 .cc{{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}}
-.clab{{font-size:30px;font-weight:700;color:#7a7592}}
+.clab{{font-size:30px;font-weight:700;color:#5f5a7c}}
 .cnum{{position:relative;font-weight:900;color:{INK};line-height:1;white-space:nowrap}}
 .cnum small{{font-size:30px;font-weight:800;color:#8a6bff;margin-left:8px}}
 .inf{{position:absolute;left:0;top:0;opacity:0}}
@@ -727,7 +727,7 @@ html,body{{margin:0;background:#000;}}
 .mag{{width:26px;height:26px;border:5px solid #9a8fb5;border-radius:50%;flex:none;box-sizing:border-box}}
 .caret{{width:3px;height:44px;background:{acc};display:block}}
 .rbig{{margin-top:44px;text-align:center;font-size:96px;font-weight:900;line-height:1;color:{readable(ta)};text-shadow:0 5px 0 {tb}33}}
-.rsub{{margin-top:16px;text-align:center;font-size:36px;font-weight:700;color:#7a7592}}
+.rsub{{margin-top:16px;text-align:center;font-size:36px;font-weight:700;color:#5f5a7c}}
 .sc{{position:relative;width:820px;height:340px}}
 .sbig{{position:absolute;left:30px;top:20px;font-size:84px;font-weight:900;text-shadow:0 4px 18px rgba(0,0,0,.35)}}
 .emb{{position:absolute;left:310px;top:50px;width:200px;height:200px}}
@@ -739,9 +739,9 @@ html,body{{margin:0;background:#000;}}
 .bub.me{{align-self:flex-end;background:linear-gradient(135deg,{ta},{tb});color:{INK};border-bottom-right-radius:10px}}
 .dgrid{{width:820px;height:176px;display:block}}
 .chosen{{position:absolute;left:350px;top:28px;width:120px;height:120px;border-radius:60px;background:#ff6b9d;color:{INK};font-size:36px;font-weight:900;display:flex;align-items:center;justify-content:center;opacity:0}}
-.dlab{{text-align:center;font-size:28px;font-weight:700;color:#7a7592;margin-top:2px}}
+.dlab{{text-align:center;font-size:28px;font-weight:700;color:#5f5a7c;margin-top:2px}}
 .dnum{{text-align:center;font-size:72px;font-weight:900;color:{INK};line-height:1.05}}
-.dsub{{text-align:center;font-size:28px;font-weight:700;color:#7a7592}}
+.dsub{{text-align:center;font-size:28px;font-weight:700;color:#5f5a7c}}
 .dots{{position:absolute;left:0;width:900px;display:flex;justify-content:center;gap:14px}}
 .dot{{width:14px;height:14px;border-radius:7px;background:#b9b4d6;display:block}}
 .dot.on{{width:34px;background:{INK}}}
@@ -752,7 +752,7 @@ html,body{{margin:0;background:#000;}}
 .track{{position:absolute;left:160px;top:986px;width:760px;height:8px;border-radius:4px;background:rgba(20,20,31,.15)}}
 .thumb{{position:absolute;left:150px;top:980px;width:20px;height:20px;border-radius:10px;background:#fff;box-shadow:0 2px 8px rgba(40,30,80,.3)}}
 #fill{{height:8px;border-radius:4px;background:linear-gradient(90deg,{ta},{tb})}}
-.tm{{position:absolute;top:1004px;font-size:26px;font-weight:700;color:#6b6585}}
+.tm{{position:absolute;top:1004px;font-size:26px;font-weight:700;color:#5f5a7c}}
 .isc{{display:flex;align-items:center;gap:16px;flex:1;min-width:0;height:100%}}
 .nc{{position:absolute;left:0;top:0;width:560px;height:96px;display:flex;align-items:center;gap:16px;padding:0 24px 0 20px;box-sizing:border-box;opacity:0}}
 .banner{{width:920px;height:112px;box-sizing:border-box;border-radius:56px;background:rgba(20,20,31,.95);display:flex;align-items:center;gap:20px;padding:0 34px 0 22px;box-shadow:0 18px 44px rgba(20,20,40,.4)}}

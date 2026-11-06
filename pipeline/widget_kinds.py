@@ -65,7 +65,7 @@ def _count(i, tag, a, b, t0, dur, fmt, ease="power2.out"):
 
 
 def _wrap(inner, label=""):
-    lab = (f'<div style="position:absolute;left:0;top:296px;width:820px;text-align:center;font-weight:700;font-size:30px;color:#7a7592">{esc(label, 36)}</div>'
+    lab = (f'<div style="position:absolute;left:0;top:296px;width:820px;text-align:center;font-weight:700;font-size:30px;color:#5f5a7c">{esc(label, 36)}</div>'
            if label else "")
     return f'<div style="position:relative;width:820px;height:340px">{inner}{lab}</div>'
 
@@ -207,7 +207,7 @@ def polaroid(w, i, s, d, at):
          f'<rect x="58" y="34" width="214" height="226" rx="9" fill="#2b2b4a"/><circle cx="165" cy="124" r="40" fill="#8c8cb8"/>'
          f'<path d="M92 260Q165 160 238 260Z" fill="#8c8cb8"/></g></svg>'
          f'<div id="yn{i}" style="position:absolute;left:360px;top:70px;font-size:124px;font-weight:900;line-height:1;color:#c2410c">{a}</div>'
-         f'<div style="position:absolute;left:368px;top:206px;font-size:38px;font-weight:700;color:#7a7592">{esc(w.get("label", ""), 22)}</div>')
+         f'<div style="position:absolute;left:368px;top:206px;font-size:38px;font-weight:700;color:#5f5a7c">{esc(w.get("label", ""), 22)}</div>')
     j = [f'tl.fromTo("#pl{i}",{{rotation:-14,scale:.8,opacity:0}},{{rotation:-5,scale:1,opacity:1,duration:.5,ease:"back.out(1.6)"}},{_t(s + .05)});',
          _count(i, "y", a, b, s + .15, d * .7, "Math.round(V)", "power1.inOut")]
     return f'<div style="position:relative;width:820px;height:340px">{h}</div>', j
