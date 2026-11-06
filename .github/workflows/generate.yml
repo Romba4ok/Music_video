@@ -45,7 +45,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: whisper-small
+          key: whisper-small-large-v3  # small finds the window, large-v3 re-reads only that window
       - name: Drive token
         env:
           RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
@@ -83,7 +83,6 @@ jobs:
           VYBEX_TIMEZONE: ${{ vars.VYBEX_TIMEZONE || 'Asia/Almaty' }}
         run: |
           D=$(date -u +%F)
-          if [ ! -f out/$D/report.json ]; then echo "no report.json (the Batch step failed or did not run): nothing to send"; exit 0; fi
           # state lives in Drive/state/buffer.json; "first run" is accepted only when the folder/file really is absent, a Drive error stops the step
           ROOT_LS=$(rclone lsf gd:)
           if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'buffer.json'; then
@@ -92,7 +91,10 @@ jobs:
             echo "no buffer state yet (first run)"
           fi
           rc=0
-          python -m pipeline buffer publish out/$D --state out/buffer-state.json || rc=$?
+          if [ -f out/$D/report.json ]; then python -m pipeline buffer publish out/$D --state out/buffer-state.json || rc=$?
+          else echo "no report.json (the Batch step failed or did not run): nothing to send today"; fi
+          # videos that Buffer has really SENT to TikTok are deleted from Drive (ready/<date>/ files, trash-bin, recoverable ~30 days); drafts and hand-posted ones stay
+          if [ -f out/buffer-state.json ]; then python -m pipeline buffer drive-cleanup --state out/buffer-state.json | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?; fi
           if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json; fi   # saved even when something failed
           exit $rc
       - name: Push results to Drive and mark songs done

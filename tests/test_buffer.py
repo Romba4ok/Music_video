@@ -417,3 +417,86 @@ def test_summary_lines(tmp_path):
     (out / "report.json").write_text(json.dumps({"songs": [{"song": "A - B", "buffer": {"state": "scheduled", "due": "2026-11-20T12:00:00+05:00"}}, {"song": "C"}],
                                                  "buffer": {"state": "queue", "slots": ["12:00", "17:00"], "timezone": "Asia/Almaty", "problems": ["f.mp4: boom"]}}), encoding="utf-8")
     assert bp.summary(out) == ["- buffer: queue  slots=12:00,17:00 Asia/Almaty", "  - PROBLEM: f.mp4: boom", "  - A - B: scheduled 2026-11-20T12:00:00+05:00"]
+
+
+# ---------- Drive cleanup after the post was SENT ----------
+
+def _entry(**kw):
+    e = {"mode": "queue", "post_id": "P", "status": "sent", "file": "1 Баста - Песня 1.mp4", "hosted": False,
+         "drive": {"dir": "ready/2026-11-19", "files": ["1 A.mp4", "1 A caption.txt", "1 A sync.txt"], "song": "A - T.mp3"}}
+    e.update(kw)
+    return e
+
+
+class Drive:
+    def __init__(self, fail=(), left=()):
+        self.removed, self.purged, self.fail, self.left = [], [], set(fail), list(left)
+
+    def remove(self, p):
+        self.removed.append(p)
+        return p not in self.fail
+
+    def ls(self, d):
+        return list(self.left)
+
+    def purge(self, d):
+        self.purged.append(d)
+        return True
+
+
+def test_publish_records_exactly_which_drive_files_belong_to_the_post(tmp_path):
+    out = make_out(tmp_path, n=1)
+    run(out, tmp_path, QUEUE)
+    e = next(iter(bp.load_state(tmp_path / "s.json").values()))
+    assert e["drive"]["dir"] == "ready/out" and e["drive"]["files"] == ["1 Баста - Песня 1.mp4", "1 Баста - Песня 1 caption.txt", "1 Баста - Песня 1 sync.txt"]
+
+
+def test_sent_post_deletes_its_drive_files_and_the_empty_day_folder():
+    d, st = Drive(), {"a": _entry()}
+    n, problems = bp.drive_cleanup(st, {}, NOW, d.remove, d.ls, d.purge)
+    assert n == 1 and problems == []
+    assert d.removed == ["ready/2026-11-19/1 A.mp4", "ready/2026-11-19/1 A caption.txt", "ready/2026-11-19/1 A sync.txt"]  # not the song in done/
+    assert d.purged == ["ready/2026-11-19"] and st["a"]["drive_deleted"]
+    assert bp.drive_cleanup(st, {}, NOW, d.remove, d.ls, d.purge) == (0, [])  # once only
+
+
+def test_day_folder_stays_while_another_video_is_still_in_it():
+    d = Drive(left=["2 B.mp4", "report.json"])
+    bp.drive_cleanup({"a": _entry()}, {}, NOW, d.remove, d.ls, d.purge)
+    assert d.purged == []
+
+
+def test_nothing_is_deleted_for_drafts_scheduled_notifications_or_old_entries():
+    d = Drive()
+    st = {"draft": _entry(mode="draft", status="draft"), "sched": _entry(status="scheduled"), "err": _entry(status="error"),
+          "hand": _entry(notification=True), "old": {"mode": "queue", "post_id": "X", "status": "sent"}}
+    assert bp.drive_cleanup(st, {}, NOW, d.remove, d.ls, d.purge) == (0, []) and d.removed == [] and d.purged == []
+
+
+def test_source_song_is_removed_only_when_asked():
+    d = Drive()
+    bp.drive_cleanup({"a": _entry()}, {"delete_song_after_sent": True}, NOW, d.remove, d.ls, d.purge)
+    assert d.removed[-1] == "done/A - T.mp3"
+
+
+def test_failed_delete_is_reported_kept_and_retried():
+    d, st = Drive(fail={"ready/2026-11-19/1 A caption.txt"}), {"a": _entry()}
+    n, problems = bp.drive_cleanup(st, {}, NOW, d.remove, d.ls, d.purge)
+    assert n == 0 and "caption.txt" in problems[0] and not st["a"].get("drive_deleted") and d.purged == []
+    d2 = Drive()
+    assert bp.drive_cleanup(st, {}, NOW, d2.remove, d2.ls, d2.purge)[0] == 1 and "drive_note" not in st["a"]
+
+
+def test_hosted_copy_goes_as_soon_as_the_post_is_sent_not_after_keep_days():
+    recent = (NOW - timedelta(hours=2)).isoformat()
+    st = {"s": {"hosted": True, "mode": "queue", "public_id": "s", "uploaded_at": recent, "due": recent, "status": "sent"},
+          "n": {"hosted": True, "mode": "queue", "public_id": "n", "uploaded_at": recent, "due": recent, "status": "sent", "notification": True},
+          "q": {"hosted": True, "mode": "queue", "public_id": "q", "uploaded_at": recent, "due": recent, "status": "scheduled"}}
+    store = FakeStore()
+    assert bp.cleanup(st, store, 7, NOW) == 1 and store.deleted == ["s"]
+
+
+def test_rclone_exit_codes_mean_gone(monkeypatch):
+    codes = iter([0, 3, 4, 1])
+    monkeypatch.setattr(bp.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=next(codes), stdout=""))
+    assert [bp.rclone_remove("x") for _ in range(4)] == [True, True, True, False]  # 3/4 = already absent

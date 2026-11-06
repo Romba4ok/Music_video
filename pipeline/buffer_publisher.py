@@ -333,13 +333,56 @@ def cleanup(state, storage, keep_days, now):
             continue
         up = parse_dt(e["uploaded_at"])
         ref = parse_dt(e["due"]) if e.get("due") else up
-        if up < now - timedelta(days=keep_days) and ref < now - timedelta(days=1):
+        sent = e.get("status") == "sent" and not e.get("notification")  # published: Buffer has taken the file, the hosted copy is not needed
+        if sent or (up < now - timedelta(days=keep_days) and ref < now - timedelta(days=1)):
             try:
                 if storage.delete(e["public_id"]):
                     e["hosted"], n = False, n + 1
             except BufferError:
                 pass  # tried again at the next run
     return n
+
+
+def rclone_remove(path):
+    """Delete one Drive file (it goes to the Drive trash, kept ~30 days). True also when it is already gone (rclone exit 3 / 4)."""
+    return subprocess.run(["rclone", "deletefile", f"gd:{path}"], capture_output=True, text=True).returncode in (0, 3, 4)
+
+
+def rclone_ls(path):
+    r = subprocess.run(["rclone", "lsf", f"gd:{path}"], capture_output=True, text=True)
+    return r.stdout.split("\n") if r.returncode == 0 else ([] if r.returncode in (3, 4) else None)
+
+
+def rclone_purge(path):
+    return subprocess.run(["rclone", "purge", f"gd:{path}"], capture_output=True, text=True).returncode in (0, 3)
+
+
+def drive_cleanup(state, bcfg, now, remove=rclone_remove, ls=rclone_ls, purge=rclone_purge):
+    """Once Buffer says a post was SENT to TikTok, delete what belongs to it in Drive: the mp4, caption.txt and sync.txt in ready/<date>/, and that
+    folder (with its report.json) when no video is left in it. The source song in done/ is deleted only with buffer.delete_song_after_sent.
+    Notification-only posts (silent videos you publish by hand) and drafts are never touched. Only exact paths recorded for a sent post are deleted.
+    A failure is kept in the state (`drive_note`) and retried at the next run. -> (deleted_count, problems)."""
+    n, problems, dirs = 0, [], set()
+    for e in state.values():
+        d = e.get("drive")
+        if e.get("status") != "sent" or not d or e.get("drive_deleted") or e.get("notification"):
+            continue
+        paths = [f'{d["dir"]}/{f}' for f in d["files"]]
+        if bcfg.get("delete_song_after_sent") and d.get("song"):
+            paths.append(f'done/{d["song"]}')
+        bad = [p for p in paths if not remove(p)]
+        if bad:
+            e["drive_note"] = "could not delete: " + ", ".join(bad)[:150]
+            problems.append(f'{e.get("file")}: {e["drive_note"]}')
+            continue
+        e["drive_deleted"], n = now.isoformat(), n + 1
+        e.pop("drive_note", None)
+        dirs.add(d["dir"])
+    for d in sorted(dirs):
+        left = ls(d)
+        if left is not None and not any(x.strip().lower().endswith(".mp4") for x in left):
+            purge(d)
+    return n, problems
 
 
 # ---------- publishing ----------
@@ -365,8 +408,10 @@ def publish_one(c, mp4, caption, rec, silent):
             return {"state": "plan", "due": due.astimezone(c.tz).isoformat(), "notification": silent, "media": info}
         pid, size = f"vybex/{sha[:40]}", Path(mp4).stat().st_size
         url = c.storage.upload(mp4, pid)
+        base = rec.get("ready") or Path(mp4).stem
         c.state[sha] = {"public_id": pid, "uploaded_at": c.now.isoformat(), "hosted": True, "mode": c.mode, "file": Path(mp4).name,
-                        "due": due.isoformat() if due else None}
+                        "due": due.isoformat() if due else None,
+                        "drive": {"dir": f"ready/{c.date}", "files": [f"{base}.mp4", f"{base} caption.txt", f"{base} sync.txt"], "song": rec.get("audio_name")}}
         check_url(url, size)
         try:
             post_id = c.buf.create_post(c.channel["id"], caption, url, c.mode, due, silent)
@@ -421,7 +466,7 @@ def publish_dir(out, cfg, state_path, env=os.environ, buf=None, storage=None, no
             info["cleaned"] = cleanup(state, storage, bcfg.get("keep_days", 7), now)
         report["buffer"] = info
         c = SimpleNamespace(mode=mode, channel=ch, state=state, buf=buf, storage=storage, bcfg=bcfg, now=now, tz=tz, hm=hm, taken=taken,
-                            taken_posts=sched, env=env)
+                            taken_posts=sched, env=env, date=report.get("date") or out.name)
         for r in todo:
             mp4, cap = out / "ready" / f"{r['ready']}.mp4", out / "ready" / f"{r['ready']} caption.txt"
             r["buffer"] = publish_one(c, mp4, caption_for(cap.read_text(encoding="utf-8")), rec=r, silent=report.get("mode") == "tiktok")
@@ -482,7 +527,7 @@ def check(cfg, env=os.environ, buf=None, now=None):
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="pipeline buffer")
-    ap.add_argument("cmd", choices=["setup", "check", "publish", "summary"])
+    ap.add_argument("cmd", choices=["setup", "check", "publish", "summary", "drive-cleanup"])
     ap.add_argument("out", nargs="?")
     ap.add_argument("--state", default=str(ROOT / "out" / "buffer-state.json"))
     a = ap.parse_args(argv)
@@ -498,6 +543,12 @@ def main(argv):
             for c in setup():
                 print(f'TikTok channel: {c["name"]} id={c["id"]} (saved to config.json)' + (" QUEUE PAUSED" if c["paused"] else ""))
             return 0
+        if a.cmd == "drive-cleanup":
+            st = load_state(a.state)
+            n, problems = drive_cleanup(st, cfg.get("buffer", {}), datetime.now(timezone.utc))
+            save_state(a.state, st)
+            print(json.dumps({"deleted_from_drive": n, "problems": problems}, ensure_ascii=False))
+            return 1 if problems else 0  # a file that could not be deleted is not hidden: red step, retried next run
         if not a.out:
             ap.error("publish/summary need out/<date>")
         if a.cmd == "summary":

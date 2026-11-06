@@ -378,3 +378,60 @@ def test_window_with_a_long_instrumental_pause_is_avoided():
     assert analyze.max_gap(lines, base) > 5
     f = analyze.pick_reliable(lines, "", CFG20)
     assert f["max_gap"] <= 5 and f["low_ratio"] <= .15
+
+
+# ---- recognition: second pass with a bigger model, hallucination filter
+def _L(texts, start=0.0, p=.9):
+    out, t = [], start
+    for x in texts:
+        out.append({"start": t, "end": t + 2.5, "text": x, "words": [{"w": w, "s": t + j * .4, "e": t + j * .4 + .35, "p": p} for j, w in enumerate(x.split())]})
+        t += 3.0
+    return out
+
+
+RCFG = dict(CFG, whisper=dict(CFG["whisper"], refine_model="large-v3", refine_margin=2.0))
+
+
+def test_whisper_credits_hallucination_is_dropped():
+    lines = _L(["живая строка песни", "Редактор субтитров А.Семкин", "ещё строка", "Продолжение следует..."])
+    kept = [l["text"] for l in analyze.clean_lines(lines, "ru")]
+    assert kept == ["живая строка песни", "ещё строка"]
+
+
+def test_refine_replaces_only_the_window_and_keeps_everything_else(monkeypatch):
+    lines = _L(["a1 a2 a3", "b1 b2 b3", "c1 c2 c3", "d1 d2 d3", "e1 e2 e3"])
+    frag = {"first": 1, "last": 3, "start": lines[1]["start"], "end": lines[3]["end"], "length": 8.5, "reason": "x", "low_ratio": .3}
+    calls = []
+
+    def fake(path, cfg, model=None, window=None):
+        calls.append((model, window))
+        return _L(["B1 B2 B3", "C1 C2 C3", "D1 D2 D3"], start=3.0, p=.95)
+
+    monkeypatch.setattr(analyze, "transcribe", fake)
+    out, f, note = analyze.refine_fragment("x.mp3", lines, frag, RCFG)
+    assert calls == [("large-v3", (1.0, 13.5))]  # the window plus a 2 s margin, nothing else
+    assert [l["text"] for l in out] == ["a1 a2 a3", "B1 B2 B3", "C1 C2 C3", "D1 D2 D3", "e1 e2 e3"]
+    assert (f["first"], f["last"]) == (1, 3) and f["low_ratio"] == 0 and "large-v3" in note and "30%" in note
+
+
+def test_refine_failure_or_empty_answer_keeps_the_first_pass(monkeypatch):
+    lines = _L(["a1 a2 a3", "b1 b2 b3", "c1 c2 c3"])
+    frag = {"first": 0, "last": 2, "start": 0.0, "end": 8.5, "length": 8.5, "reason": "x", "low_ratio": .1}
+
+    def boom(*a, **k):
+        raise MemoryError("no memory for the model")
+
+    monkeypatch.setattr(analyze, "transcribe", boom)
+    out, f, note = analyze.refine_fragment("x.mp3", lines, frag, RCFG)
+    assert out is lines and f is frag and "failed" in note and "MemoryError" in note
+    monkeypatch.setattr(analyze, "transcribe", lambda *a, **k: _L(["z"], start=1.0))  # one word instead of nine: not trusted
+    out, f, note = analyze.refine_fragment("x.mp3", lines, frag, RCFG)
+    assert out is lines and "kept the first pass" in note
+
+
+def test_refine_is_off_without_a_different_model():
+    lines = _L(["a1 a2"])
+    frag = {"first": 0, "last": 0, "start": 0.0, "end": 2.5, "length": 2.5, "reason": "x", "low_ratio": 0}
+    for cfg in (CFG, dict(CFG, whisper=dict(CFG["whisper"], refine_model=""))):
+        cfg = dict(cfg, whisper=dict(cfg["whisper"], **({"refine_model": cfg["whisper"]["model"]} if cfg is CFG else {})))
+        assert analyze.refine_fragment("x.mp3", lines, frag, cfg) == (lines, frag, "")

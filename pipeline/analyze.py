@@ -12,6 +12,10 @@ from pathlib import Path
 from .common import ROOT, load_config
 
 
+# phrases whisper invents on silence / music tails (YouTube-subtitle credits etc.); a line that is one of them is not a lyric
+HALLUCINATION = re.compile(r"субтитр|редактор|корректор|продолжение следует|подписывайтесь|спасибо за просмотр|dimatorzok", re.I)
+
+
 def norm(s):
     return re.sub(r"[^\w\s]", "", s.lower(), flags=re.U).strip()
 
@@ -26,20 +30,52 @@ def _pcm16k(path):
     return np.frombuffer(raw, dtype=np.float32)
 
 
-def transcribe(path, cfg):
+def transcribe(path, cfg, model=None, window=None):
+    """Whisper lines with absolute word times. `model` overrides config (the refine pass), `window=(from_sec, to_sec)` transcribes only that slice."""
     from faster_whisper import WhisperModel
     w = cfg["whisper"]
-    model = WhisperModel(w["model"], device=w["device"], compute_type=w["compute_type"])
-    segs, _ = model.transcribe(_pcm16k(path), language=cfg["language"], word_timestamps=True,
-                               condition_on_previous_text=False)
+    m = WhisperModel(model or w["model"], device=w["device"], compute_type=w["compute_type"])
+    pcm, off = _pcm16k(path), 0.0
+    if window:
+        off = max(0.0, window[0])
+        pcm = pcm[int(off * 16000): int(window[1] * 16000)]
+    segs, _ = m.transcribe(pcm, language=cfg["language"], word_timestamps=True, condition_on_previous_text=False)
     lines = []
     for s in segs:
-        words = [{"w": x.word.strip(), "s": round(x.start, 3), "e": round(x.end, 3), "p": round(x.probability, 3)}
+        words = [{"w": x.word.strip(), "s": round(x.start + off, 3), "e": round(x.end + off, 3), "p": round(x.probability, 3)}
                  for x in (s.words or []) if x.word.strip()]
         if words:
             lines.append({"start": words[0]["s"], "end": words[-1]["e"], "text": " ".join(x["w"] for x in words),
                           "words": words})
     return clean_lines(lines, cfg["language"])
+
+
+def refine_fragment(path, lines, frag, cfg):
+    """Second pass: the chosen window (+margin) is transcribed again with the bigger `whisper.refine_model`, and those lines replace the first-pass
+    ones. Only recognition output is used, nothing is guessed. Any failure or a suspiciously empty answer keeps the first pass.
+    Returns (lines, fragment, note)."""
+    w = cfg["whisper"]
+    name = w.get("refine_model")
+    if not name or name == w["model"] or not frag:
+        return lines, frag, ""
+    lo, hi = frag["start"] - 0.5, frag["end"] + 0.5
+    mid = lambda l: (l["start"] + l["end"]) / 2  # noqa: E731
+    margin = w.get("refine_margin", 2.0)
+    try:
+        new = transcribe(path, cfg, name, (frag["start"] - margin, frag["end"] + margin))
+    except Exception as e:  # noqa: BLE001 - model download / memory problems must not stop the song
+        return lines, frag, f"refine with {name} failed: {type(e).__name__}: {str(e)[:80]}"
+    new = [l for l in new if lo <= mid(l) <= hi]
+    old_n = sum(len(l["words"]) for l in lines if lo <= mid(l) <= hi)
+    new_n = sum(len(l["words"]) for l in new)
+    if not new or new_n < 0.5 * old_n:
+        return lines, frag, f"refine with {name} kept the first pass ({new_n} words vs {old_n})"
+    out = sorted([l for l in lines if not lo <= mid(l) <= hi] + new, key=lambda l: l["start"])
+    first, last = out.index(new[0]), out.index(new[-1])
+    f = dict(frag, first=first, last=last, start=out[first]["start"], end=out[last]["end"])
+    f["length"] = round(f["end"] - f["start"], 2)
+    f["low_ratio"], f["max_gap"] = round(low_ratio(out, f, w["min_confidence"]), 3), round(max_gap(out, f), 1)
+    return out, f, f'text refined with {name} (low-confidence {frag.get("low_ratio", 0):.0%} -> {f["low_ratio"]:.0%})'
 
 
 def clean_lines(lines, lang):
@@ -49,7 +85,7 @@ def clean_lines(lines, lang):
     out = []
     for ln in lines:
         ws = [w for w in ln["words"] if not re.search(r"[A-Za-z]", w["w"])]
-        if ws:
+        if ws and not HALLUCINATION.search(" ".join(w["w"] for w in ws)):
             out.append({"start": ws[0]["s"], "end": ws[-1]["e"], "text": " ".join(w["w"] for w in ws), "words": ws})
     return out
 
@@ -208,6 +244,9 @@ def analyze(path, popular_line="", cfg=None):
     b = beats(path)
     chorus = find_chorus(lines)
     frag = pick_reliable(lines, popular_line, cfg, chorus)
+    lines, frag, note = refine_fragment(path, lines, frag, cfg)
+    if note:
+        frag["reason"] += "; " + note
     low = sum(1 for l in lines for w in l["words"] if w["p"] < cfg["whisper"]["min_confidence"])
     nwords = sum(len(l["words"]) for l in lines)
     summary = {"bpm": b["bpm"], "audio_duration": b["duration"], "lines": len(lines), "words": nwords,
