@@ -112,7 +112,7 @@ def apply_result(res, analysis, spec, cfg):
     fr = analysis["fragment"]
     lines = analysis["lines"][fr["first"]: fr["last"] + 1]
     a, b, note = 0, len(lines) - 1, []
-    tr = res.get("trim")
+    tr = None if fr.get("pinned") else res.get("trim")  # the owner pinned the start in the file name: no trimming
     if isinstance(tr, dict):
         try:
             f, t = int(tr["from"]), int(tr["to"])

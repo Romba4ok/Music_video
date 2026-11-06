@@ -166,6 +166,15 @@ def test_queue_from_audio_adds_only_uncovered_files(tmp_path):
     assert [(e["artist"], e["title"], e["audio_file"]) for e in got] == [("Guf", "Ayza", "Guf - Ayza.mp3")]
 
 
+def test_queue_from_audio_start_hint_in_brackets(tmp_path):
+    (tmp_path / "Баста - 8800 [Я не знаю].mp3").write_bytes(b"x")
+    (tmp_path / "Guf - Ayza.mp3").write_bytes(b"x")
+    got = {e["audio_file"]: e for e in batch.queue_from_audio(tmp_path, [])}
+    e = got["Баста - 8800 [Я не знаю].mp3"]
+    assert (e["artist"], e["title"], e["popular_line"]) == ("Баста", "8800", "=Я не знаю")
+    assert got["Guf - Ayza.mp3"]["popular_line"] == ""
+
+
 def test_pack_names_and_caption(tmp_path):
     (tmp_path / "work-1").mkdir()
     (tmp_path / "work-1" / "final.mp4").write_bytes(b"v")

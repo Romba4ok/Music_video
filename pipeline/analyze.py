@@ -122,8 +122,12 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
         return None
     chorus = chorus if chorus is not None else find_chorus(lines)
     anchor, reason = None, ""
+    pin = popular_line.startswith("=")  # '=text' (from 'Artist - Title [text].mp3'): the fragment starts exactly at that line
+    popular_line = popular_line.lstrip("=").strip()
     if popular_line:
         anchor, ratio = _match_popular(lines, popular_line)
+        if pin:  # a line that itself begins with the phrase wins over a pair match that only contains it
+            anchor = next((i for i, l in enumerate(lines) if norm(l["text"]).startswith(norm(popular_line))), anchor)
         reason = f"popular_line matched (ratio {ratio})" if anchor is not None else f"popular_line not found (best {ratio})"
     if anchor is None and chorus:
         anchor = chorus[0]["first"]
@@ -132,7 +136,8 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
         anchor = 0
         reason = (reason + "; " if reason else "") + "no chorus found, starting at first line"
     first = anchor
-    for b in chorus:  # start at the beginning of the chorus block that contains the anchor
+    pin = pin and "matched" in reason  # phrase not found -> normal automatic choice
+    for b in ([] if pin else chorus):  # start at the beginning of the chorus block that contains the anchor
         if b["first"] <= anchor <= b["last"]:
             first = b["first"]
             break
@@ -144,7 +149,7 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
     while length(first, last) < min_len and (last + 1 < len(lines) or first > 0):
         if last + 1 < len(lines) and length(first, last + 1) <= max_len:
             last += 1
-        elif first > 0 and length(first - 1, last) <= max_len:
+        elif first > 0 and not pin and length(first - 1, last) <= max_len:
             first -= 1
         else:
             break
@@ -152,7 +157,7 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
     while last + 1 < len(lines) and lines[last + 1]["start"] - lines[last]["end"] < gap and length(first, last + 1) <= max_len:
         last += 1
     return {"first": first, "last": last, "start": lines[first]["start"], "end": lines[last]["end"],
-            "length": round(length(first, last), 2), "reason": reason}
+            "length": round(length(first, last), 2), "reason": reason + ("; start pinned by file name" if pin else ""), "pinned": pin}
 
 
 def analyze(path, popular_line="", cfg=None):

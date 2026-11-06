@@ -58,8 +58,9 @@ def queue_from_audio(ad, queue):
         if any(e["audio_file"] == f.name or all(w in stem for w in re.split(r"\W+", f"{e['artist']} {e['title']}".lower()) if w)
                for e in queue):
             continue
-        artist, title = parse_name(f.stem)
-        out.append({"artist": artist, "title": title, "popular_line": "", "audio_file": f.name})
+        m = re.search(r"\s*\[([^\]]+)\]\s*$", f.stem)  # 'Artist - Title [first words of the line to start from]'
+        artist, title = parse_name(f.stem[:m.start()] if m else f.stem)
+        out.append({"artist": artist, "title": title, "popular_line": "=" + m.group(1).strip() if m else "", "audio_file": f.name})
     return out
 
 

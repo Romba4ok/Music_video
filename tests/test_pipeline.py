@@ -171,6 +171,19 @@ def test_pick_fragment_never_exceeds_max():
     assert f["length"] <= 40
 
 
+def test_pinned_start_begins_exactly_at_that_line():
+    lines = mk_lines()
+    f = analyze.pick_fragment(lines, "=morning comes", 20, 60)  # the chorus snap would start earlier
+    assert f["pinned"] and f["first"] == 9 and "pinned" in f["reason"]
+    f = analyze.pick_fragment(lines, "=hook line beta", 20, 60)
+    assert f["first"] == 4  # not snapped back to the chorus start (line 3)
+
+
+def test_pinned_start_not_found_falls_back_to_auto():
+    f = analyze.pick_fragment(mk_lines(), "=zzzz qqqq nothing", 30, 60)
+    assert not f["pinned"] and "chorus" in f["reason"]
+
+
 # ---- scenario generation
 def test_build_scenes_no_overlap_and_relative_times():
     lines = mk_lines()
