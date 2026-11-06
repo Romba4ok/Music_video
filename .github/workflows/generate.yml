@@ -3,8 +3,6 @@ name: generate
 # Drive folder (its ID = secret GDRIVE_FOLDER_ID):  audio/ (you drop songs)  ready/<date>/ (results)  done/ (processed songs)  queue.txt (optional)
 # No "push" trigger: a code push must never generate videos or put posts into the TikTok queue.
 on:
-  schedule:
-    - cron: "25 5 * * *"
   workflow_dispatch:
     inputs:
       mode:
