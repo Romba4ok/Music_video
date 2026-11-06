@@ -10,7 +10,7 @@
 - **AUTO** (`with_audio`): звук из разрешённого источника (CC0/CC-BY или ваш файл) вшивается в mp4. `python -m pipeline batch --mode auto --count 3`
 - **TIKTOK** (`tiktok`): mp4 без звука, тайминг под песню + `sync-N.txt` («поставьте звук с 1:02.40»); официальный звук добавляете в приложении TikTok. `python -m pipeline batch --mode tiktok --count 3`
 
-Этапы независимы: `python -m pipeline fetch "…"` → `analyze <audio>` → `render out/<дата>`. Любой полученный легально mp4/mov/webm автоматически конвертируется в аудио через ffmpeg. Сбой одной песни или источника не останавливает пакет (`out/<дата>/report.json`). Запуск: `.github/workflows/generate.yml`. Ежедневно в 08:00 Алматы его запускает cron-job.org (см. ниже), запасное расписание GitHub `25 5 * * *` UTC (10:25 Алматы), плюс ручной запуск; на push не запускается, два запуска одновременно не идут.
+Этапы независимы: `python -m pipeline fetch "…"` → `analyze <audio>` → `render out/<дата>`. Любой полученный легально mp4/mov/webm автоматически конвертируется в аудио через ffmpeg. Сбой одной песни или источника не останавливает пакет (`out/<дата>/report.json`). Запуск: `.github/workflows/generate.yml`. Ежедневно в 08:00 Алматы его запускает cron-job.org (`workflow_dispatch`, см. ниже), плюс ручной запуск; собственного расписания GitHub (`schedule`) в файле нет, оно не срабатывало; на push не запускается, два запуска одновременно не идут.
 
 ## Без терминала: Google Drive
 Песни кладёте в `VYBEX/audio` на Диске, workflow по расписанию забирает их, делает ролики и кладёт в `VYBEX/ready/<дата>/` (mp4 + caption.txt + sync.txt). Настройка: `docs/drive-setup.md`.
@@ -27,7 +27,7 @@
 | # | Когда | Что происходит | Сервис |
 |---|---|---|---|
 | 1 | заранее | Вы кладёте песни `Исполнитель - Название [начало строки].mp3` в `VYBEX/audio` на Google Drive | **Google Drive** |
-| 2 | 08:00 Алматы | Планировщик отправляет запрос на запуск workflow `generate` (`workflow_dispatch`). Запасной запуск: расписание самого GitHub, `25 5 * * *` UTC (10:25 Алматы). Два запуска не идут одновременно (`concurrency`) | **cron-job.org** → **GitHub Actions** |
+| 2 | 08:00 Алматы | Планировщик отправляет запрос на запуск workflow `generate` (`workflow_dispatch`). Расписание самого GitHub из файла убрано. Два запуска не идут одновременно (`concurrency`) | **cron-job.org** → **GitHub Actions** |
 | 3 | сразу | GitHub поднимает виртуальную машину Ubuntu, ставит Node 22, Python 3.12, ffmpeg, rclone, зависимости и Chrome для HyperFrames. Секреты и переменные берутся из Settings репозитория | **GitHub Actions**, **GitHub Secrets/Variables** |
 | 4 | дальше | rclone забирает `audio/` из Drive (токен обновляется по refresh-token) | **Google Drive API** через rclone |
 | 5 | дальше | ffprobe проверяет файл, whisper распознаёт слова с таймкодами, librosa считает биты, выбирается фрагмент 20–40 с без пауз и с надёжным текстом | **faster-whisper** (модель с Hugging Face, кэшируется), **librosa**, **ffmpeg** |
