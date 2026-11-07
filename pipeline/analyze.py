@@ -151,18 +151,77 @@ def _match_popular(lines, popular, min_ratio=0.6):
     return (bi, round(best, 2)) if best >= min_ratio else (None, round(best, 2))
 
 
-def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, chorus=None, anchor_idx=None):
+def _best_popular(lines, popular):
+    """`popular` may hold several candidate lines separated by '||' (TikTok analysis): the one that matches the transcript best wins."""
+    best = (None, 0.0, popular.split("||")[0].strip())
+    for p in (x.strip() for x in popular.split("||") if x.strip()):
+        i, r = _match_popular(lines, p)
+        if (i is not None, r) > (best[0] is not None, best[1]):
+            best = (i, r, p)
+    return best
+
+
+OPEN_WORDS = {"и", "а", "но", "что", "как", "чтобы", "если", "когда", "пока", "я", "ты", "мы", "он", "она", "в", "на", "с", "к", "от", "не", "ни", "же", "бы", "по", "за", "из", "у", "о", "для"}
+CONT_WORDS = {"и", "а", "но", "да", "или", "что", "как", "чтобы", "когда", "пока", "если", "ведь", "зато", "потому"}  # a line that starts so continues the previous one
+
+
+def _close_kind(lines, j, chorus):
+    """How well line j ends a thought: 'strong' (end of the song / a repeated chorus block / sentence mark + pause / a pause of 2 s+),
+    'weak' (a plain pause of 1 s+) or None (open: ends on a comma or a hanging word, or the next line goes on with «и», «а», «но»...).
+    A pause alone proves nothing: a song pauses in the middle of a sentence (instrumental gap between «…хлопнет дверь» and «И дрогнут провода»)."""
+    if j + 1 >= len(lines) or any(b["last"] == j for b in chorus):
+        return "strong"
+    t, pause = lines[j]["text"].strip(), lines[j + 1]["start"] - lines[j]["end"]
+    last, nxt = (norm(t).split() or [""])[-1], (norm(lines[j + 1]["text"]).split() or [""])[0]
+    if t[-1:] in ".!?…" and pause >= .6:
+        return "strong"
+    if t.endswith(",") or last in OPEN_WORDS:
+        return "strong" if pause >= 4.0 else None
+    if nxt in CONT_WORDS and pause < 4.0:
+        return None
+    return "strong" if pause >= 2.0 else "weak" if pause >= 1.0 else None
+
+
+def _close_thought(lines, first, last, anchor, min_len, limit, chorus, lookahead=12.0):
+    """Move the end to where the thought is finished. Forward (the video may be up to `limit` s long) to the nearest closing line; a weak
+    closing is dropped for a strong one that follows within `lookahead` s. Nothing closes in reach -> back to the last closing line that keeps
+    min_len and the popular line; otherwise unchanged."""
+    def length(b):
+        return lines[b]["end"] - lines[first]["start"]
+    j, weak = last, None
+    while j < len(lines):
+        k = _close_kind(lines, j, chorus)
+        if k == "strong":
+            return j
+        if k == "weak" and weak is None:
+            weak = j
+        if weak is not None and lines[j]["end"] - lines[weak]["end"] > lookahead:
+            return weak
+        if j + 1 < len(lines) and length(j + 1) <= limit:
+            j += 1
+            continue
+        break
+    if weak is not None:
+        return weak
+    for k in range(min(j, len(lines) - 1), max(first, anchor) - 1, -1):
+        if length(k) >= min_len and _close_kind(lines, k, chorus):
+            return k
+    return last
+
+
+def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, chorus=None, anchor_idx=None, overrun=0.0):
     """Window of whole lines containing the most popular line (else the top chorus). Ends on a phrase boundary."""
     if not lines:
         return None
     chorus = chorus if chorus is not None else find_chorus(lines)
     anchor, reason = None, ""
-    pin = popular_line.startswith("=")  # '=text' (from 'Artist - Title [text].mp3'): the fragment starts exactly at that line
+    file_pin = popular_line.startswith("=")
+    pin = file_pin  # '=text' (from 'Artist - Title [text].mp3'): the fragment starts exactly at that line
     popular_line = popular_line.lstrip("=").strip()
     if anchor_idx is not None:  # a candidate window that starts exactly at this line (used when looking for a more reliable window)
         anchor, reason, pin = anchor_idx, "matched candidate line", True
     elif popular_line:
-        anchor, ratio = _match_popular(lines, popular_line)
+        anchor, ratio, popular_line = _best_popular(lines, popular_line)
         if pin:  # a line that itself begins with the phrase wins over a pair match that only contains it
             anchor = next((i for i, l in enumerate(lines) if norm(l["text"]).startswith(norm(popular_line))), anchor)
         reason = f"popular_line matched (ratio {ratio})" if anchor is not None else f"popular_line not found (best {ratio})"
@@ -174,6 +233,7 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
         reason = (reason + "; " if reason else "") + "no chorus found, starting at first line"
     first = anchor
     pin = pin and "matched" in reason  # phrase not found -> normal automatic choice
+    owner_pin = file_pin and pin  # the owner chose the start in the file name: the end is not moved either
     for b in ([] if pin else chorus):  # start at the beginning of the chorus block that contains the anchor
         if b["first"] <= anchor <= b["last"]:
             first = b["first"]
@@ -190,10 +250,15 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
             first -= 1
         else:
             break
+    while (not owner_pin and first > 0 and (norm(lines[first]["text"]).split() or [""])[0] in CONT_WORDS  # starts on «И…», «А…»: the sentence began one line earlier
+           and lines[first]["start"] - lines[first - 1]["end"] < 4.0 and length(first - 1, last) <= max_len + overrun):
+        first -= 1
     # stop at a phrase boundary: extend (within max_len) until the pause after the last line is >= gap
     while last + 1 < len(lines) and lines[last + 1]["start"] - lines[last]["end"] < gap and length(first, last + 1) <= max_len:
         last += 1
-    return {"first": first, "last": last, "start": lines[first]["start"], "end": lines[last]["end"],
+    if not owner_pin:  # no start typed by the owner: end where the thought is finished, not where the clock ran out (may run `overrun` s past max_len)
+        last = _close_thought(lines, first, last, anchor, min_len, max_len + overrun, chorus)
+    return {"first": first, "last": last, "start": lines[first]["start"], "end": lines[last]["end"], "end_kind": _close_kind(lines, last, chorus),
             "length": round(length(first, last), 2), "reason": reason + ("; start pinned by file name" if pin else ""), "pinned": pin}
 
 
@@ -214,7 +279,8 @@ def pick_reliable(lines, popular_line, cfg, chorus=None):
     returned with `low_ratio` above the limit, and the caller refuses the song instead of rendering text the recogniser was unsure about."""
     thr, limit, gap_limit = cfg["whisper"]["min_confidence"], cfg["whisper"].get("max_low_ratio", 0.15), cfg["whisper"].get("max_gap_sec", 5.0)
     chorus = chorus if chorus is not None else find_chorus(lines)
-    base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus)
+    over = cfg.get("close_overrun", 8.0)
+    base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus, overrun=over)
     if not base:
         return None
     base["low_ratio"], base["max_gap"] = round(low_ratio(lines, base, thr), 3), round(max_gap(lines, base), 1)
@@ -222,7 +288,7 @@ def pick_reliable(lines, popular_line, cfg, chorus=None):
         return base
     best = None
     for i in sorted(range(len(lines)), key=lambda k: abs(k - base["first"])):
-        c = pick_fragment(lines, "", cfg["min_len"], cfg["max_len"], chorus=chorus, anchor_idx=i)
+        c = pick_fragment(lines, "", cfg["min_len"], cfg["max_len"], chorus=chorus, anchor_idx=i, overrun=over)
         if c["length"] < cfg["min_len"]:
             continue
         c["low_ratio"], c["max_gap"] = round(low_ratio(lines, c, thr), 3), round(max_gap(lines, c), 1)
@@ -244,7 +310,15 @@ def analyze(path, popular_line="", cfg=None):
     b = beats(path)
     chorus = find_chorus(lines)
     frag = pick_reliable(lines, popular_line, cfg, chorus)
-    lines, frag, note = refine_fragment(path, lines, frag, cfg)
+    w, refined = cfg["whisper"], False
+    if popular_line and frag and "moved to line" in frag.get("reason", ""):
+        # the window with the popular line was too unsure for the small model: the big one may read it reliably, so try that before giving the line up
+        base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus, overrun=cfg.get("close_overrun", 8.0))
+        l2, f2, n2 = refine_fragment(path, lines, base, cfg) if base else (lines, None, "")
+        if (f2 and "refined" in n2 and f2.get("low_ratio", 1) <= w.get("max_low_ratio", 0.15) and f2.get("max_gap", 0) <= w.get("max_gap_sec", 5.0)):
+            lines, frag, note, refined = l2, dict(f2, pinned=False), n2 + "; the popular line is reliable after the second pass", True
+    if not refined:
+        lines, frag, note = refine_fragment(path, lines, frag, cfg)
     if note:
         frag["reason"] += "; " + note
     low = sum(1 for l in lines for w in l["words"] if w["p"] < cfg["whisper"]["min_confidence"])

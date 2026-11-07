@@ -7,6 +7,11 @@ PALETTES = {"cold", "warm", "dusk", "contrast"}
 METAPHORS = {"breakup", "loneliness", "love", "nostalgia", "money", "time", "inner"}
 
 
+def max_total(cfg):
+    """Longest allowed video: max_len, plus what a fragment may run over to finish its thought (close_overrun) and the intro + tail around it."""
+    return cfg["max_len"] + cfg.get("close_overrun", 8.0) + 4
+
+
 def validate_spec(spec, cfg):
     errs = []
     for k in ("id", "mode", "song", "metaphor", "palette", "caption", "hashtags", "ai_label"):
@@ -42,7 +47,7 @@ def validate_spec(spec, cfg):
                 errs.append("scenes not contiguous")
                 break
             t = s["start"] + s["dur"]
-        if sc and not (cfg["min_len"] <= round(t) <= cfg["max_len"]):
+        if sc and not (cfg["min_len"] <= round(t) <= max_total(cfg)):
             errs.append("total duration outside min_len..max_len")
     return errs
 
@@ -85,7 +90,7 @@ def run_checks(spec, video, plan, cfg):
         "media_format", f'{v.get("width")}x{v.get("height")} {fps:.2f}fps {v.get("codec_name")}')
     dur = float(info["format"]["duration"])
     exp = plan["duration"]
-    add(cfg["min_len"] <= dur <= cfg["max_len"] and abs(dur - exp) <= 0.25, "duration", f"{dur:.2f}s (expected {exp}s, {cfg['min_len']}-{cfg['max_len']})")
+    add(cfg["min_len"] <= dur <= max_total(cfg) and abs(dur - exp) <= 0.25, "duration", f"{dur:.2f}s (expected {exp}s, {cfg['min_len']}-{max_total(cfg):g})")
     if spec["mode"] == "with_audio":
         if a is None:
             add(False, "audio", "no audio track")
@@ -104,6 +109,9 @@ def run_checks(spec, video, plan, cfg):
     cards = [s for s in plan["scenes"] if s["role"] == "lyric"]
     overlap = [i for i, (x, y) in enumerate(zip(plan["scenes"], plan["scenes"][1:])) if x["end"] > y["start"] + 1e-6]
     add(not overlap, "no_card_overlap", f"cards {overlap[:5]}" if overlap else "")
+    from .render_widgets import HOLD_MAX
+    empty = [(round(x["end"] + HOLD_MAX, 1), round(y["start"], 1)) for x, y in zip(plan["scenes"], plan["scenes"][1:]) if y["start"] - x["end"] - HOLD_MAX > 0.4]
+    add(not empty, "no_empty_stage", f"no card between {empty[:3]} (s)" if empty else "")  # a card is held HOLD_MAX s past its line; a longer pause leaves the stage bare
     if spec["mode"] in ("with_audio", "tiktok") and cards:
         words = sum(len(c["words"]) for c in cards)
         low = sum(len(c["low_conf"]) for c in cards)

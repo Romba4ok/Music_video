@@ -42,3 +42,23 @@ def test_bad_trim_is_ignored_and_failures_fall_back(monkeypatch):
     def boom(p, c):
         raise RuntimeError("no token")
     assert author.author(ENTRY, AN, SPEC, CFG, runner=boom)[2].startswith("fallback")
+
+
+def test_a_bad_first_answer_is_retried(monkeypatch):
+    monkeypatch.delenv("VYBEX_NO_AUTHOR")
+    answers, prompts = ["not json", json.dumps(GOOD)], []
+    def flaky(p, c):
+        prompts.append(p)
+        return answers.pop(0)
+    st = author.author(ENTRY, AN, SPEC, CFG, runner=flaky)[2]
+    assert st.startswith("claude") and "attempt 2" in st and len(prompts) == 2
+    n = [0]
+    def always_bad(p, c):
+        n[0] += 1
+        return "not json"
+    assert author.author(ENTRY, AN, SPEC, CFG, runner=always_bad)[2].startswith("fallback") and n[0] == 3
+
+
+def test_every_brief_is_different_and_bans_real_kinds():
+    briefs = {author.variety() for _ in range(12)}
+    assert len(briefs) > 6 and all("НЕ используй виды:" in b and "draw" not in b.split("виды:")[1].split(".")[0] for b in briefs)

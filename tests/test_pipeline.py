@@ -171,6 +171,34 @@ def test_pick_fragment_never_exceeds_max():
     assert f["length"] <= 40
 
 
+def _spoken(texts, dur=4.0, gap=0.8):
+    t, out = 0.0, []
+    for x in texts:
+        out.append({"start": t, "end": t + dur, "text": x, "words": [{"w": w, "s": t, "e": t + 1, "p": .9} for w in x.split()]})
+        t += dur + gap
+    return out
+
+
+def test_fragment_ends_where_the_thought_is_finished():
+    lines = _spoken(["слово раз", "слово два", "я пошёл и", "домой.", "новая тема", "другая тема"])
+    f = analyze.pick_fragment(lines, "слово раз", 12, 40)  # 12 s is reached on the open line "я пошёл и": the thought is not finished there
+    assert lines[f["last"]]["text"] == "домой."
+    f = analyze.pick_fragment(lines, "слово раз", 12, 14)  # the finishing line does not fit max_len: never longer than max_len
+    assert f["length"] <= 14
+
+
+def test_pinned_fragment_end_is_not_moved():
+    lines = _spoken(["слово раз", "слово два", "я пошёл и", "домой.", "новая тема"])
+    assert analyze.pick_fragment(lines, "=слово раз", 12, 40)["last"] == 2
+
+
+def test_popular_candidates_best_match_wins():
+    lines = _spoken(["первая строка", "вторая строка", "третья строка"])
+    r = analyze._best_popular(lines, "zzzz qqqq || вторая строка")
+    assert r[0] == 1 and r[2] == "вторая строка"
+    assert analyze._best_popular(lines, "zzzz qqqq")[0] is None
+
+
 def test_pinned_start_begins_exactly_at_that_line():
     lines = mk_lines()
     f = analyze.pick_fragment(lines, "=morning comes", 20, 60)  # the chorus snap would start earlier
@@ -214,3 +242,56 @@ def test_validate_spec():
     c = good_spec(); c["mode"] = "commentary"; c["scenes"] = [{"role": "hook", "text": "t", "start": 0, "dur": 20},
                                                            {"role": "outro", "text": "t", "start": 21, "dur": 15}]
     assert "scenes not contiguous" in qa.validate_spec(c, CFG)
+
+
+def test_a_sentence_that_goes_on_is_not_a_finished_thought():
+    # real case (Splin, «Романс»): 2.3 s instrumental gap in the middle of «…хлопнет дверь / И дрогнут провода / Привет, мы будем счастливы теперь / И навсегда»
+    T = [("На площади полки", 0, 3), ("Темно в конце стройки", 5.5, 8.3), ("Одни гудки", 8.3, 10.7), ("И где-то хлопнет дверь", 10.7, 16.6),
+         ("И дрогнут провода", 18.8, 21.4), ("Привет, мы будем счастливы теперь", 23.0, 29.3), ("И навсегда", 29.3, 31.5)]
+    lines = [{"start": a, "end": b, "text": t, "words": []} for t, a, b in T]
+    f = analyze.pick_fragment(lines, "", 12, 24, anchor_idx=None, overrun=10.0, chorus=[])
+    assert lines[f["last"]]["text"] == "И навсегда"        # not «хлопнет дверь»: the next line starts with «И»; the weak stop after «провода» yields to the strong end
+    f = analyze.pick_fragment(lines, "", 12, 24, chorus=[])  # without the overrun the end cannot reach it: never past max_len
+    assert f["length"] <= 24
+    assert analyze.pick_fragment(lines, "=Одни гудки", 3, 24, overrun=10.0, chorus=[])["last"] == 3  # an owner-pinned start keeps the old end rule («хлопнет дверь»), the thought-closing does not move it
+
+
+# ---- guards against defects found on real renders (2026-11-07)
+def test_card_never_covers_the_island_or_the_player_chip():
+    from pipeline import render_widgets as rw
+    for h in (rw.CARD_H, rw.CARD_H + rw.CAP_H):  # without and with the caption row
+        clip_h = h + 40
+        grow = clip_h * (rw.CARD_ZOOM - 1) / 2
+        assert rw.CARD_TOP - grow >= 150, "the zoomed card must start below the island + notifications (they end at y=140)"
+        assert rw.CARD_TOP + clip_h + grow <= 820, "the zoomed card must end above the author chip (y=825)"
+
+
+def test_long_artist_names_keep_the_song_title_visible():
+    from pipeline import render_widgets as rw
+    assert rw._full("Баста", "8800", 32) == "Баста — 8800"
+    assert rw._full("9грамм BUGZ feat. Mic Dogg", "Такая Загажочная", 32) == "Такая Загажочная"  # not «9грамм BUGZ feat. Mic Dogg — Та…»
+    assert rw._full("", "Романс", 32) == "Романс"
+
+
+def test_qa_flags_a_bare_stage_between_cards(monkeypatch):
+    from pipeline import qa
+    cfg = {"min_len": 20, "max_len": 40, "close_overrun": 8, "width": 1080, "height": 1920, "fps": 30, "target_lufs": -14, "max_true_peak": -1,
+           "whisper": {}, "tail_sec": 2.5}
+    info = {"streams": [{"codec_type": "video", "width": 1080, "height": 1920, "r_frame_rate": "30/1", "codec_name": "h264"}], "format": {"duration": "28"}}
+    monkeypatch.setattr(qa, "probe", lambda v: info)
+    monkeypatch.setattr(qa, "black_frames", lambda v: [])
+    monkeypatch.setattr(qa, "validate_spec", lambda s, c: [])
+    def run(gap):
+        sc = [{"role": "lyric", "start": 0, "end": 4, "words": [], "low_conf": []}, {"role": "lyric", "start": 4 + gap, "end": 10 + gap, "words": [], "low_conf": []},
+              {"role": "outro", "start": 10 + gap, "end": 28, "words": [], "low_conf": []}]
+        return {n: s for s, n, d in qa.run_checks({"mode": "tiktok"}, "x.mp4", {"scenes": sc, "duration": 28}, cfg)}["no_empty_stage"]
+    assert run(3.9) == "PASS"   # a card is held 4.5 s past its line
+    assert run(6.0) == "FAIL"
+
+
+def test_batch_reports_a_fragment_that_does_not_end_on_a_finished_thought():
+    lines = _spoken(["слово раз", "слово два", "я пошёл и", "домой"], gap=0.3)  # nothing closes, nothing follows
+    f = analyze.pick_fragment(lines, "слово раз", 5, 40, chorus=[])
+    assert f["end_kind"] == "strong"  # the last line of the song always closes
+    f = analyze.pick_fragment(lines[:3], "слово раз", 5, 9, chorus=[])  # cut by max_len on a hanging «и»
+    assert f["end_kind"] in (None, "strong", "weak")  # the field is always present, batch turns None into a visible note

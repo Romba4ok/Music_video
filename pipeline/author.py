@@ -5,6 +5,7 @@ sanitized here; any failure (no CLI, no token, bad JSON, timeout) falls back to 
 Needs the `claude` CLI and a login (CLAUDE_CODE_OAUTH_TOKEN in CI, see docs/claude-author.md). One call per video."""
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -14,19 +15,34 @@ from . import svg_safe
 from .common import ROOT
 from .render_widgets import ART_KEYS, KINDS
 
-KEYS = ("kind", "app", "cat", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
-        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "motion")
+KEYS = ("kind", "app", "cat", "cap", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
+        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion")
 NUM = ("from", "to", "fill", "zoom", "shift")  # `from`/`to` are numbers for most kinds and place names for route
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
+STYLES = ("акварель с мягкими разводами", "вырезанная из бумаги аппликация в несколько слоёв", "плоские яркие стикеры",
+          "мягкий пастельный минимализм", "киноплакат с крупным силуэтом", "рисунок мелками", "детская книжка с крупными предметами",
+          "вечерний город в тёплых огнях", "светлая плоская иллюстрация, как в приложении")  # figurative only: abstract neon/geometry read badly in a card
+
+
+def variety(rng=None):
+    """A different brief on every call (system random, nothing stored): 4 template kinds are banned and the drawings get another style, so
+    two videos never come out of the same recipe even when the lines look alike. Only banned kinds that exist in the renderer are named."""
+    rng = rng or random.SystemRandom()
+    ban = rng.sample([k for k in KINDS if k not in ("draw", "scene")], 4)
+    return (f"Для этого ролика НЕ используй виды: {', '.join(ban)}. Стиль всех рисунков `draw` в этом ролике: {rng.choice(STYLES)}. "
+            f"Рисуй узнаваемые предметы из жизни (ключ, чашка, дверь, окно, телефон), а не абстрактные фигуры и не неон. Образы необычные, без очевидных (сердце, часы, дождь).")
+
+
 def build_prompt(entry, lines, cfg):
     tpl = (ROOT / "prompts" / "widgets.md").read_text(encoding="utf-8")
     txt = "\n".join(f'{i} | {l["start"]:.1f}–{l["end"]:.1f} | {l["text"]}' for i, l in enumerate(lines))
-    lo, hi = cfg["min_len"], cfg["max_len"]
+    lo, hi = cfg["min_len"], cfg["max_len"] + cfg.get("close_overrun", 8.0)  # the fragment may run over max_len to finish its thought
     avoid = entry.get("avoid_kinds") or []  # kinds the other videos of today's batch already use: ask for different ones
     note = f"Другие ролики сегодня уже используют: {', '.join(avoid)}. Выбирай другие виды и другие art." if avoid else ""
+    note = (note + " " + variety()).strip()
     return (tpl.replace("{{ARTIST}}", entry.get("artist", "")).replace("{{TITLE}}", entry.get("title", "")).replace("{{LINES}}", txt)
             .replace("{{AVOID}}", note)
             .replace("{{MIN}}", str(lo)).replace("{{MAX}}", str(hi)).replace("{{TARGET}}", f"{lo + 4}–{lo + 12}"))
@@ -88,6 +104,11 @@ def sanitize_widgets(widgets, n_lines):
                     sv = svg_safe.clean(v)
                     if sv:
                         o[k] = sv
+            elif k == "frames":  # a drawn card is a short film: up to 5 pictures that follow each other about once a second
+                if w["kind"] == "draw" and isinstance(v, list):
+                    fr = [x for x in (svg_safe.clean(m) for m in v[:8]) if x][:5]
+                    if fr:
+                        o[k] = fr
             elif k == "motion":
                 if v in svg_safe.MOTIONS:
                     o[k] = v
@@ -114,7 +135,7 @@ def sanitize_widgets(widgets, n_lines):
                     pass
             else:
                 o[k] = _s(v)
-        if o["kind"] == "draw" and "svg" not in o:
+        if o["kind"] == "draw" and "svg" not in o and "frames" not in o:
             o["kind"] = "scene"  # the drawing was missing or not allowed: show a template picture instead
         used |= set(ln)
         out.append(o)
@@ -131,7 +152,7 @@ def apply_result(res, analysis, spec, cfg):
         try:
             f, t = int(tr["from"]), int(tr["to"])
             ln = lines[t]["end"] - lines[f]["start"]
-            if 0 <= f <= t < len(lines) and cfg["min_len"] <= ln <= cfg["max_len"]:
+            if 0 <= f <= t < len(lines) and cfg["min_len"] <= ln <= cfg["max_len"] + cfg.get("close_overrun", 8.0):
                 a, b = f, t
                 note.append(f"trim {f}..{t}")
         except (KeyError, TypeError, ValueError, IndexError):
@@ -163,11 +184,17 @@ def author(entry, analysis, spec, cfg, runner=call_claude):
         return analysis, spec, "off"
     if runner is call_claude and not shutil.which("claude"):
         return analysis, spec, "fallback: claude CLI not installed"
-    try:
-        fr = analysis["fragment"]
-        lines = analysis["lines"][fr["first"]: fr["last"] + 1]
-        res = parse_json(runner(build_prompt(entry, lines, cfg), cfg))
-        an, sp, note = apply_result(res, analysis, spec, cfg)
-        return an, sp, f"claude: {len(sp['widgets'])} cards, {note}"
-    except Exception as e:  # noqa: BLE001 - the batch must go on with auto widgets
-        return analysis, spec, f"fallback: {type(e).__name__}: {str(e)[:120]}"
+    fr = analysis["fragment"]
+    lines = analysis["lines"][fr["first"]: fr["last"] + 1]
+    err = None
+    for attempt in range(1, a.get("attempts", 3) + 1):  # a bad answer / rate limit gets a fresh brief (new variety) instead of keyword cards
+        try:
+            res = parse_json(runner(build_prompt(entry, lines, cfg), cfg))
+            an, sp, note = apply_result(res, analysis, spec, cfg)
+            return an, sp, f"claude: {len(sp['widgets'])} cards, {note}" + (f", attempt {attempt}" if attempt > 1 else "")
+        except subprocess.TimeoutExpired as e:  # a slow Claude will not be faster the second time
+            err = e
+            break
+        except Exception as e:  # noqa: BLE001 - the batch must go on with auto widgets
+            err = e
+    return analysis, spec, f"fallback: {type(err).__name__}: {str(err)[:120]}"

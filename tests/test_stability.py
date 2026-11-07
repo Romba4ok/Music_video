@@ -103,7 +103,7 @@ def test_reliable_window_replaces_one_with_too_many_unsure_words():
     lines = _lines(low={3, 4, 5, 6, 7, 8})
     f = analyze.pick_reliable(lines, "", CFG20)
     assert f["low_ratio"] <= .15 and f["length"] >= 20 and "moved to line" in f["reason"]
-    assert not {3, 4, 5, 6, 7, 8} & set(range(f["first"], f["last"] + 1))
+    assert analyze.low_ratio(lines, f, .5) <= .15  # a longer window that finishes the thought may touch one unsure line, as long as the share stays under the limit
     assert all(lines[i]["words"][0]["p"] == .2 for i in (3, 4))  # the words themselves are untouched
 
 
@@ -363,7 +363,7 @@ def test_draw_card_renders_scoped_svg_and_a_loop_and_falls_back():
 
 def test_prompt_explains_drawing_and_wants_no_text_in_pictures():
     p = author.build_prompt({"artist": "A", "title": "T"}, [{"start": 0, "end": 3, "text": "строка", "words": []}], CFG)
-    assert "draw: svg" in p and "text/tspan" in p and "0 0 800 420" in p
+    assert "draw: frames" in p and "text/tspan" in p and "0 0 800 420" in p
 
 
 def test_window_with_a_long_instrumental_pause_is_avoided():
@@ -451,3 +451,22 @@ def test_text_on_the_dark_island_banner_stays_light():
     now = h[h.index(".now{"):].split("}")[0]
     col = now.split("color:")[1].split(";")[0]
     assert rw.contrast(col, "#14141f") >= 4.5  # "сейчас" sits on the dark banner: darkening every grey made it unreadable
+
+
+def test_a_drawn_card_can_be_several_frames_and_only_safe_ones_survive():
+    ws = author.sanitize_widgets([
+        {"lines": [0], "kind": "draw", "frames": [GOOD, "<script>1</script>", GOOD, GOOD, GOOD, GOOD, GOOD]},  # bad frame dropped, max 5 kept
+        {"lines": [1], "kind": "draw", "frames": ["<script>1</script>"], "art": "moon"},                         # nothing usable -> template picture
+        {"lines": [2], "kind": "pair", "frames": [GOOD]}], 3)                                                   # frames only belong to draw
+    assert ws[0]["kind"] == "draw" and len(ws[0]["frames"]) == 5 and all("<circle" in f for f in ws[0]["frames"])
+    assert ws[1]["kind"] == "scene" and "frames" not in ws[1] and "frames" not in ws[2]
+
+
+def test_frames_follow_each_other_about_once_a_second():
+    from pipeline import render_widgets as rw
+    html_, js = rw._body("draw", {"frames": [GOOD, GOOD, GOOD], "svg": "<script>1</script>"}, 4, 10.0, 3.0, "x")
+    assert html_.count('id="df4_') == 3 and 'id="dr4f1_lg"' in html_ and 'id="dr4f2_lg"' in html_ and "<script" not in html_
+    assert any('"#df4_1"' in l and "opacity:1" in l and "10.9" not in l and ",11.0)" in l.replace(" ", "") or ",11)" in l for l in js)  # frame 2 comes in at +1 s
+    assert any('"#df4_0"' in l and "opacity:0" in l for l in js)  # and the previous one leaves
+    h1, j1 = rw._body("draw", {"svg": GOOD}, 5, 0.0, 3.0, "x")  # a single drawing still works as before
+    assert h1.count('id="df5_') == 1 and not any("opacity:1,duration:.3" in l for l in j1)

@@ -135,6 +135,12 @@ def _clip(text, n):
     return text if len(text) <= n else text[:n - 1].rstrip() + "…"
 
 
+def _full(artist, title, n):
+    """'Artist — Title' when it fits, else just the title: a clipped «9грамм BUGZ feat. Mic Dogg — Та…» hides the song's name."""
+    t = f"{artist} — {title}" if artist else title
+    return t if len(t) <= n else _clip(title, n)
+
+
 def _esc(t, n=60):
     return html.escape(_clip(str(t), n))
 
@@ -303,10 +309,20 @@ def _body(kind, w, i, s, d, text):
                  f'document.getElementById("dn{i}").textContent={_fmt_js(f"dd{i}.v")};}}}},{s + .2:.3f});')
         j.append(f'tl.fromTo("#ch{i}",{{opacity:0,scale:.3,transformOrigin:"50% 50%"}},{{opacity:1,scale:1,duration:.45,ease:"back.out(2)"}},{at(.6)});')
     elif kind == "draw":
-        markup = svg_safe.clean(w.get("svg"))  # re-checked here: a hand-edited spec must not bypass the allowlist
-        if markup:
+        # re-checked here: a hand-edited spec must not bypass the allowlist
+        frames = [m for m in (svg_safe.clean(x) for x in (w.get("frames") or [])[:8]) if m][:5] or [m for m in [svg_safe.clean(w.get("svg"))] if m]
+        if frames:
+            layers = "".join(f'<g id="df{i}_{k}" style="transform-origin:400px 210px">{svg_safe.scope(m, i if len(frames) == 1 else f"{i}f{k}")}</g>'
+                             for k, m in enumerate(frames))
             h = (f'<div class="sc"><svg class="cart" style="width:820px;height:340px" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice">'
-                 f'<g id="dr{i}" style="transform-origin:400px 210px">{svg_safe.scope(markup, i)}</g></svg></div>')
+                 f'<g id="dr{i}" style="transform-origin:400px 210px">{layers}</g></svg></div>')
+            step = min(1.8, d / len(frames))  # about once a second; fewer frames than seconds are spread over the card so nothing stands still
+            for k in range(len(frames)):
+                t = round(s + k * step, 3)
+                j.append(f'tl.fromTo("#df{i}_{k}",{{scale:1}},{{scale:1.06,duration:{round(step + .3, 3)},ease:"none",immediateRender:false}},{t});')  # slow push-in
+                if k:  # cross-dissolve into the next picture of the card
+                    j.append(f'tl.fromTo("#df{i}_{k}",{{opacity:0}},{{opacity:1,duration:.3,ease:"power1.inOut"}},{t});')
+                    j.append(f'tl.to("#df{i}_{k - 1}",{{opacity:0,duration:.3,ease:"power1.inOut"}},{t});')
             j.extend(_draw_anim(w.get("motion"), i, s, d))
         else:  # unusable drawing -> a template picture, the video still renders
             return _body("scene", {k: v for k, v in w.items() if k not in ("svg", "kind")}, i, s, d, text)
@@ -390,11 +406,13 @@ def readable(col, bg=WORST_BG, need=3.1):
         if contrast(h, bg) >= need:
             return h
     return INK
-BODY_X, BODY_Y = 130, 396  # stage coords of the 820x340 card body
+HOLD_MAX = 4.5  # s a card stays after its line ends when the vocal pauses (analysis refuses windows with a longer pause: whisper.max_gap_sec)
+CARD_TOP, CARD_ZOOM, CAP_H = 180, 1.04, 84  # card clip top (stage px) and its constant zoom; the island + notifications live above y=140, the card's zoomed top edge stays at ~168
+BODY_X, BODY_Y = 130, CARD_TOP + 30 + 64 + 14  # stage coords of the 820x340 card body (pad + head + gap)
 ANCH = {"pair": (410, 150), "pulse": (190, 110), "route": (660, 60), "venn": (410, 170), "ring": (410, 150), "thermo": (241, 272),
         "alert": (410, 190), "target": (410, 170), "polaroid": (165, 150), "versus": (200, 130), "counter": (170, 170),
         "search": (410, 45), "camera": (410, 170), "chat": (200, 170), "dots": (410, 88), "scene": (410, 170)}
-CARD_H = 606  # 30+64 head+14+128 lyric+340 body+30 padding; fixed so every card sits the same way
+CARD_H = 478  # 30+64 head+14+340 body+30 padding; fixed so every card sits the same way
 
 
 GLYPH = {
@@ -455,7 +473,7 @@ def build_html(plan, spec, cfg):
             f'<div id="clipIntro" class="clip" data-start="0" data-duration="{intro}" data-track-index="2" style="left:0;top:0;width:{w}px;height:{SQ}px">'
             f'<div id="intro" style="position:absolute;inset:0">{ring}{icon}'
             f'<div id="itx" style="position:absolute;left:0;top:640px;width:{w}px;display:flex;flex-direction:column;gap:14px">'
-            f'<div class="icredit">{html.escape(credit)}</div><div class="isub">{html.escape(_clip((artist + " — " if artist else "") + title, 30))}</div></div></div></div>')
+            f'<div class="icredit">{html.escape(credit)}</div><div class="isub">{html.escape(_full(artist, title, 30))}</div></div></div></div>')
         js.append(f'tl.fromTo("#iicon",{{scale:.3,rotation:-20,opacity:0}},{{scale:1,rotation:0,opacity:1,duration:.5,ease:"back.out(1.8)"}},0);')
         js.append(f'tl.fromTo("#ring",{{scale:.6,opacity:0}},{{scale:1,opacity:1,duration:.4,ease:"power2.out",transformOrigin:"50% 50%"}},0);')
         js.append(f'tl.to("#ring",{{rotation:150,duration:{intro},ease:"none",transformOrigin:"50% 50%"}},0);')
@@ -478,7 +496,7 @@ def build_html(plan, spec, cfg):
         f'<circle cx="7" cy="18" r="3" fill="#fff"/><circle cx="17" cy="16" r="3" fill="#fff"/></svg></div>'
         f'<div class="itxt"><b>{html.escape(_clip(title, 17))}</b><span>{html.escape(_clip(artist, 22))}</span></div><div class="eqs">{bars}</div></div></div>'
         f'<div id="chip" class="chip"><i id="cav"></i>{html.escape(credit)}</div>'
-        f'<div id="ptitle" class="ptitle">{html.escape(_clip((artist + " — " if artist else "") + title, 32))}</div>'
+        f'<div id="ptitle" class="ptitle">{html.escape(_full(artist, title, 32))}</div>'
         f'<div class="track"><div id="fill"></div></div><div id="thumb" class="thumb"></div><div id="tl" class="tm" style="left:160px">0:00</div><div id="tr" class="tm" style="right:160px">-0:00</div>'
         '</div></div>')
     # island / clock / player slide (stay opaque): while they faded, white text on a half-transparent pill measured 1.4:1 contrast
@@ -500,54 +518,44 @@ def build_html(plan, spec, cfg):
     js.append(f'tl.fromTo("#bl1",{{x:0,y:0}},{{x:420,y:380,duration:{dur},ease:"sine.inOut"}},0);')
     js.append(f'tl.fromTo("#bl2",{{x:0,y:0}},{{x:-420,y:-380,duration:{dur},ease:"sine.inOut"}},0);')
     tq = intro
-    while tq < ost - .2:  # the equalizer keeps moving between beats too
+    while tq < ost - .2:  # the island equalizer drifts on a fixed slow clock; nothing on screen is tied to the song's beats
         for k in range(4):
-            js.append(f'tl.to("#eq{k}",{{scaleY:{rng.uniform(.3, 1):.2f},duration:.2,ease:"sine.inOut"}},{round(tq, 3)});')
-        tq += .25
-    grid = list(plan.get("beats", [])) if len(plan.get("beats", [])) >= 8 else [intro + i * .5 for i in range(int(cd / .5))]
-    for t in grid[:300]:
-        for k in range(4):
-            js.append(f'tl.to("#eq{k}",{{scaleY:{rng.uniform(.35, 1):.2f},duration:.12,ease:"power1.out"}},{round(t, 3)});')
-    for bi, t in enumerate(grid[:300]):  # downbeats (every 4th): island, chip, title, progress thumb pop; background flashes
-        if bi % 4 == 0 and t >= intro:
-            js.append(f'tl.fromTo("#flash",{{opacity:.5}},{{opacity:0,duration:.4,ease:"power2.out",immediateRender:false}},{round(t, 3)});')
-            for el, sc in (("isl", 1.07), ("chip", 1.08), ("ptitle", 1.05), ("thumb", 1.6)):
-                js.append(f'tl.fromTo("#{el}",{{scale:{sc}}},{{scale:1,duration:.3,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
+            js.append(f'tl.to("#eq{k}",{{scaleY:{rng.uniform(.3, 1):.2f},duration:.4,ease:"sine.inOut"}},{round(tq, 3)});')
+        tq += .45
+    has_cap = any((x.get("widget") or {}).get("cap") for x in plan["scenes"])  # caption row under the picture, same height on every card
+    card_h = CARD_H + (CAP_H if has_cap else 0)
+    top0 = CARD_TOP  # the card grows downwards only: its top edge must never reach the island / notification band (y < 140)
+    body_y = top0 + 30 + 64 + 14
     prev, couriers = "", []
+    n_cards = min(14, sum(1 for x in plan["scenes"] if x["role"] != "outro")) or 1  # page dots = number of cards
     seed = zlib.crc32(f'{artist}{title}'.encode("utf-8")) % 997  # per song: two songs do not pick the same pictures for the same kind of line
     used_arts, kind_count = [], {}
     art_index = {a[0]: n for n, a in enumerate(ARTS)}
     for i, s in enumerate(plan["scenes"]):  # --- one widget per scene
         nxt = plan["scenes"][i + 1]["start"] if i + 1 < len(plan["scenes"]) else s["end"]
-        s = dict(s, end=max(s["end"], min(nxt, s["end"] + 1.2, dur)))  # hold the card through short vocal gaps: never an empty stage
+        s = dict(s, end=max(s["end"], min(nxt, s["end"] + HOLD_MAX, dur)))  # hold the card through vocal gaps: never an empty stage
         d = round(s["end"] - s["start"], 3)
         if d <= 0:
             continue
         outro = s["role"] == "outro"
-        if outro:  # end card (mirrors the intro): the last card collapses into an orb, then icon + big title + credit + confetti ring
+        if outro:  # end: the last card collapses into an orb that grows into a glowing sphere + confetti ring + author chip
             t0 = s["start"]
-            tt = html.escape(_clip(title.upper(), 24))
-            fs2 = max(60, min(112, int(900 / (0.78 * max(len(_clip(title, 24)), 1)))))
             clips.append(
                 f'<div id="clip{i}" class="clip" data-start="{t0}" data-duration="{d}" data-track-index="3" style="left:0;top:0;width:{w}px;height:{SQ}px">'
-                f'<svg id="oring" viewBox="0 0 400 400" style="position:absolute;left:340px;top:240px;width:400px;height:400px"><circle cx="200" cy="200" r="180" fill="none" '
-                f'stroke="{acc}" stroke-width="5" stroke-dasharray="3 22" stroke-linecap="round" opacity=".55"/></svg>'
-                f'<div id="oicon" style="position:absolute;left:430px;top:330px;width:220px;height:220px;border-radius:54px;background:linear-gradient(135deg,{ta},{tb});'
-                f'box-shadow:0 20px 50px rgba(90,70,160,.3);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" width="120" height="120">'
-                f'<path d="M9 18V6l10-2v12" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="7" cy="18" r="3" fill="#fff"/><circle cx="17" cy="16" r="3" fill="#fff"/></svg></div>'
-                f'<div id="otx" style="position:absolute;left:0;top:585px;width:{w}px;display:flex;flex-direction:column;align-items:center;gap:12px">'
-                f'<div class="fbig" style="font-size:{fs2}px">{tt}</div><div class="isub">{html.escape(_clip(artist, 30))}</div>'
-                f'<div class="icredit" style="font-size:46px">{html.escape(credit)}</div></div></div>')
-            js.append(f'tl.fromTo("#oring",{{scale:.6,opacity:0}},{{scale:1,opacity:1,duration:.4,ease:"power2.out",transformOrigin:"50% 50%"}},{round(t0 + .2, 3)});')
-            js.append(f'tl.to("#oring",{{rotation:150,duration:{d},ease:"none",transformOrigin:"50% 50%"}},{t0});')
-            js.append(f'tl.fromTo("#oicon",{{scale:.2,rotation:-25,opacity:0}},{{scale:1,rotation:0,opacity:1,duration:.5,ease:"back.out(1.8)"}},{round(t0 + .2, 3)});')
-            js.append(f'tl.fromTo("#otx",{{opacity:0,y:24}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(t0 + .45, 3)});')
+                f'<svg id="oring" viewBox="0 0 400 400" style="position:absolute;left:340px;top:240px;width:400px;height:400px"><circle cx="200" cy="200" r="186" fill="none" '
+                f'stroke="#fff" stroke-width="4" opacity=".9"/></svg>'
+                f'<div id="osph" style="position:absolute;left:390px;top:290px;width:300px;height:300px;border-radius:150px;'
+                f'background:radial-gradient(circle at 35% 30%,#fff 0 5%,#ff9ad0 15%,#ff4fa3 48%,#9b6bff 100%);box-shadow:0 0 150px 40px rgba(255,79,163,.45)"></div>'
+                f'<div id="ochip" class="chip"><i></i>{html.escape(credit)}</div></div>')  # the ending is a glowing orb + confetti, no title card
+            js.append(f'tl.fromTo("#osph",{{scale:.2,opacity:0}},{{scale:1,opacity:1,duration:.6,ease:"back.out(1.6)",transformOrigin:"50% 50%"}},{round(t0 + .2, 3)});')
+            js.append(f'tl.fromTo("#oring",{{scale:.6,opacity:0}},{{scale:1,opacity:.9,duration:.5,ease:"power2.out",transformOrigin:"50% 50%"}},{round(t0 + .3, 3)});')
+            js.append(f'tl.fromTo("#osph",{{scale:1}},{{scale:1.06,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .85, 3)});')
+            js.append(f'tl.fromTo("#oring",{{scale:1}},{{scale:1.07,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .85, 3)});')
+            js.append(f'tl.fromTo("#ochip",{{opacity:0,y:14}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(t0 + .45, 3)});')
             couriers.append(f'<div id="orb" class="cr" data-layout-allow-occlusion style="left:480px;top:403px;width:120px;height:120px;border-radius:60px;'
                             f'background:radial-gradient(circle,#fff 0 20%,{ta} 42%,rgba(255,255,255,0) 72%)"></div>')
             js.append(f'tl.fromTo("#orb",{{scale:.2,opacity:0}},{{scale:1,opacity:1,duration:.3,ease:"power2.out"}},{round(t0 - .2, 3)});')
             js.append(f'tl.to("#orb",{{scale:2.8,opacity:0,duration:.35,ease:"power2.out"}},{round(t0 + .15, 3)});')
-            js.append(f'tl.fromTo("#oicon",{{y:0}},{{y:-10,duration:.8,yoyo:true,repeat:{max(1, int(d / .8))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .75, 3)});')
-            js.append(f'tl.fromTo("#otx",{{scale:1}},{{scale:1.04,duration:.9,yoyo:true,repeat:{max(1, int(d / .9))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .9, 3)});')
             for q in range(14):
                 ang = q / 14 * 6.283
                 clips.append(f'<svg id="ob{q}" class="sp" style="left:{525 + int(110 * math.cos(ang))}px;top:{425 + int(110 * math.sin(ang))}px;width:30px;height:30px;opacity:0" viewBox="0 0 10 10">'
@@ -568,29 +576,22 @@ def build_html(plan, spec, cfg):
             dapp, dicon, dcat = wk.DEFAULT_APP.get(kind, (ARTS[k][1], APP_ICON.get(wd.get("art"), ARTS[k][2]), ""))
             app, icol, cat = wd.get("app") or dapp, wd.get("icon") or dicon, wd.get("cat", dcat)
             accent = "#ff4f6d" if icol.lower() in ("#14141f", "#0b0b10") else icol
-            text = _clip(s["text"], 100)
-            words, tot = [], 0
-            for x in (s.get("words") or []):  # keep the displayed words within the 100-char budget the card was sized for
-                tot += len(x["w"]) + 1
-                if tot > 101:
-                    break
-                words.append(x)
-            sub = (f'<span class="w" id="c{i}w0">{html.escape(text)}</span>' if not words else
-                   " ".join(f'<span class="w" id="c{i}w{q}">{html.escape(x["w"])}</span>' for q, x in enumerate(words)))
-            fs = 44 if len(text) <= 38 else 38 if len(text) <= 60 else 32
+            text = _clip(s["text"], 100)  # the lyric is never shown on the card: only the picture (and a few kinds' own short labels) carries it
             b_html, b_js = _body(kind, wd, i, s["start"], d, text)
             life = round(min(d + .6, dur - s["start"]), 3)  # the card lingers behind the next one (stack)
-            dots = "".join(f'<i{(" id=dn%d" % i) if q == i % 5 else ""} class="dot{" on" if q == i % 5 else ""}"></i>' for q in range(5))
+            dots = "".join(f'<i class="dot{" on" if q == min(i, n_cards - 1) else ""}"></i>' for q in range(n_cards))
             head = f'<div class="ht"><b>{_esc(app, 20)}</b>' + (f'<em>{_esc(cat, 22)}</em>' if cat else "") + '</div>'
             clips.append(
-                f'<div id="clip{i}" class="clip" data-start="{s["start"]}" data-duration="{life}" data-track-index="3" data-layout-allow-overlap data-layout-allow-occlusion style="left:90px;top:160px;width:900px;height:{CARD_H + 40}px">'
-                f'<div id="sw{i}" style="position:absolute;left:0;top:0;width:900px;height:{CARD_H + 40}px">'
-                f'<div id="card{i}" class="wcard" style="height:{CARD_H}px"><div class="shn"><i id="sh{i}"></i></div><div class="head"><span id="ap{i}" class="app" style="background:{icol}"></span>{head}</div>'
-                f'<div class="lyric"><div class="lt" style="font-size:{fs}px">{sub}</div></div><div id="bd{i}" class="body">{b_html}</div></div>'
-                f'<div class="dots" style="top:{CARD_H + 16}px">{dots}</div></div></div>')
+                f'<div id="clip{i}" class="clip" data-start="{s["start"]}" data-duration="{life}" data-track-index="3" data-layout-allow-overlap data-layout-allow-occlusion style="left:90px;top:{top0}px;width:900px;height:{card_h + 40}px">'
+                f'<div id="sw{i}" style="position:absolute;left:0;top:0;width:900px;height:{card_h + 40}px">'
+                f'<div id="card{i}" class="wcard" style="height:{card_h}px"><div class="shn"><i id="sh{i}"></i></div><div class="head"><span id="ap{i}" class="app" style="background:{icol}"></span>{head}</div>'
+                f'<div id="bd{i}" class="body">{b_html}</div>'
+                + (f'<div id="cp{i}" class="cap">{_esc(wd.get("cap", ""), 26)}</div>' if has_cap else "") + '</div>'
+                f'<div class="dots" style="top:{card_h + 16}px">{dots}</div></div></div>')
             # the card slides in fully opaque: while it faded in, its text sat on top of whatever the previous card showed (contrast 1.9:1)
             js.append(f'tl.fromTo("#clip{i}",{{opacity:1,scale:.92,y:150,x:-40,rotation:-5,rotationX:-12,transformPerspective:900,filter:"blur(10px)"}},'
-                      f'{{opacity:1,scale:1,y:0,x:0,rotation:0,rotationX:0,filter:"blur(0px)",duration:.45,ease:"back.out(1.15)",transformOrigin:"50% 30%"}},{s["start"]});')
+                      f'{{opacity:1,scale:1,y:0,x:0,rotation:0,rotationX:0,filter:"blur(0px)",duration:.6,ease:"power3.out",transformOrigin:"50% 30%"}},{s["start"]});')
+            js.append(f'tl.set("#sw{i}",{{scale:{CARD_ZOOM},transformOrigin:"50% 50%"}},0);')  # the card is shown larger: the picture is the point
             if i + 1 < len(plan["scenes"]) and plan["scenes"][i + 1]["role"] == "outro":  # collapse into the orb of the end card
                 te = round(max(s["end"] - .35, s["start"] + .5), 3)
                 js.append(f'tl.to("#clip{i}",{{scale:.08,opacity:0,filter:"blur(6px)",duration:.35,ease:"power3.in",transformOrigin:"50% 50%"}},{te});')
@@ -598,14 +599,16 @@ def build_html(plan, spec, cfg):
                 te = round(max(s["end"], s["start"] + .5), 3)
                 js.append(f'tl.to("#clip{i}",{{opacity:.5,scale:.93,y:-18,filter:"blur(5px)",duration:.4,ease:"power2.out"}},{te});')
                 js.append(f'tl.to("#clip{i}",{{opacity:0,duration:.2,ease:"none"}},{round(te + .4, 3)});')
-            sg, cur, tsw, n_sw = (1 if i % 2 == 0 else -1), 0.0, s["start"] + .45, 0  # slow sway: the whole card turns left and right
+            sg, cur, tsw, n_sw = (1 if i % 2 == 0 else -1), 0.0, s["start"] + .6, 0  # slow sway: the whole card turns gently left and right
             while tsw < s["end"] + .3:
-                tgt = sg * (4 + (n_sw * 3) % 4)
-                js.append(f'tl.fromTo("#sw{i}",{{rotationY:{cur},rotation:{round(cur * .25, 2)},transformPerspective:900}},'
-                          f'{{rotationY:{tgt},rotation:{round(tgt * .25, 2)},duration:1.3,ease:"sine.inOut",immediateRender:false}},{round(tsw, 3)});')
-                cur, sg, tsw, n_sw = tgt, -sg, tsw + 1.3, n_sw + 1
+                tgt = sg * (3 + n_sw % 3)
+                js.append(f'tl.fromTo("#sw{i}",{{rotationY:{cur},rotation:{round(cur * .2, 2)},transformPerspective:900}},'
+                          f'{{rotationY:{tgt},rotation:{round(tgt * .2, 2)},duration:2.6,ease:"sine.inOut",immediateRender:false}},{round(tsw, 3)});')
+                cur, sg, tsw, n_sw = tgt, -sg, tsw + 2.6, n_sw + 1
             if prev and prev != "outro":  # a glowing orb flies from the previous card's key object to this card's: the "linked" transition
-                (ax, ay), (bx, by) = [(BODY_X + ANCH.get(k, (410, 170))[0], BODY_Y + ANCH.get(k, (410, 170))[1]) for k in (prev, kind)]
+                cy0 = top0 + (card_h + 40) / 2  # the zoom is about the card centre
+                (ax, ay), (bx, by) = [(540 + (BODY_X + ANCH.get(k, (410, 170))[0] - 540) * CARD_ZOOM, cy0 + (body_y + ANCH.get(k, (410, 170))[1] - cy0) * CARD_ZOOM)
+                                      for k in (prev, kind)]
                 top = min(ay, by) - 80
                 for sfx, dl, sz in (("", 0.0, 1.0), ("b", .05, .62), ("c", .1, .4)):
                     r = 28 * sz
@@ -618,28 +621,14 @@ def build_html(plan, spec, cfg):
                     js.append(f'tl.fromTo("#cr{i}{sfx}",{{y:{oy}}},{{y:{tp},duration:.22,ease:"power2.out",immediateRender:false}},{tt0});')
                     js.append(f'tl.to("#cr{i}{sfx}",{{y:{ey},duration:.23,ease:"power2.in"}},{round(tt0 + .22, 3)});')
                     js.append(f'tl.to("#cr{i}{sfx}",{{scale:2.4,opacity:0,duration:.2,ease:"power2.out"}},{round(tt0 + .45, 3)});')
-            wacc = readable(accent)
-            for q, x in enumerate(words):  # word-by-word: grey -> accent pop -> ink
-                t0 = round(x["s"], 3)
-                t1 = round(max(words[q + 1]["s"] if q + 1 < len(words) else t0 + .5, t0 + .2), 3)
-                js.append(f'tl.fromTo("#c{i}w{q}",{{color:"{GREY}"}},{{color:"{wacc}",duration:.08,ease:"none"}},{t0});')
-                js.append(f'tl.fromTo("#c{i}w{q}",{{color:"{wacc}"}},{{color:"{INK}",duration:.18,ease:"none",immediateRender:false}},{t1});')
-                js.append(f'tl.fromTo("#c{i}w{q}",{{scale:1,y:0}},{{scale:1.22,y:-5,duration:.1,yoyo:true,repeat:1,ease:"power2.out",transformOrigin:"50% 100%",immediateRender:false}},{t0});')
-            if not words:
-                js.append(f'tl.fromTo("#c{i}w0",{{color:"{GREY}"}},{{color:"{INK}",duration:.4}},{round(s["start"] + .1, 3)});')
             js.extend(b_js)
+            if has_cap and wd.get("cap"):  # the short caption of the picture comes in a moment after the card itself
+                js.append(f'tl.fromTo("#cp{i}",{{opacity:0,y:12}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(s["start"] + .55, 3)});')
             tsh = s["start"] + .7  # light sweep across the card, repeated
             while tsh < s["end"] - .3:
                 js.append(f'tl.fromTo("#sh{i}",{{x:0}},{{x:1300,duration:.9,ease:"power1.inOut",immediateRender:false}},{round(tsh, 3)});')
                 tsh += 2.2
             js.append(f'tl.fromTo("#bd{i}",{{y:0}},{{y:5,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(s["start"] + .5, 3)});')
-            for bi, t in enumerate(grid[:300]):  # the whole card sways in 3D on every beat, harder on downbeats
-                if s["start"] + .5 <= t < s["end"] - .1 and bi % 4 == 0:  # only downbeats: every beat made the card twitch
-                    k, sg = .85, (1 if (bi // 4) % 2 == 0 else -1)
-                    js.append(f'tl.fromTo("#ap{i}",{{scale:1.25,rotation:{-10 * sg}}},{{scale:1,rotation:0,duration:.3,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
-                    js.append(f'tl.fromTo("#dn{i}",{{scaleX:1.5}},{{scaleX:1,duration:.3,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
-                    js.append(f'tl.fromTo("#card{i}",{{rotation:{round(1.1 * k * sg, 2)},rotationY:{round(5 * k * sg, 2)},scale:{round(1 + .022 * k, 3)},transformPerspective:900,immediateRender:false}},'
-                              f'{{rotation:0,rotationY:0,scale:1,duration:.34,ease:"power3.out",immediateRender:false}},{round(t, 3)});')
             if "notify" in wd:  # phone-style banner drops from the top over the clock and the player island, then the music shows again
                 bn = wd["notify"]
             elif kind in wk.DEFAULT_NOTIFY:
@@ -660,8 +649,6 @@ def build_html(plan, spec, cfg):
                 js.append(f'tl.fromTo("#bnc{i}",{{opacity:0}},{{opacity:1,duration:.2,ease:"none"}},{round(tb + .3, 3)});')
                 js.append(f'tl.fromTo("#bnc{i}",{{opacity:1}},{{opacity:0,duration:.15,ease:"none",immediateRender:false}},{te2});')
                 js.append(f'tl.fromTo("#isc",{{opacity:0}},{{opacity:1,duration:.2,ease:"none",immediateRender:false}},{round(te2 + .3, 3)});')
-                js.append(f'tl.fromTo("#card{i}",{{x:-7}},{{x:7,duration:.045,repeat:7,yoyo:true,ease:"none",immediateRender:false}},{round(tb + .3, 3)});')
-                js.append(f'tl.to("#card{i}",{{x:0,duration:.06}},{round(tb + .68, 3)});')
         prev = kind
         for q in range(8):  # confetti burst at widget start
             ang = q / 8 * 6.283 + (i % 3) * .3
@@ -709,10 +696,8 @@ html,body{{margin:0;background:#000;}}
 .ht{{display:flex;flex-direction:column;line-height:1.1}}
 .ht b{{font-size:36px;font-weight:800;color:{INK}}}
 .ht em{{font-style:normal;font-size:22px;font-weight:700;color:#7a5cff}}
-.lyric{{margin:6px 0 8px;height:128px;display:flex;align-items:center}}
-.lt{{flex:1;font-weight:800;line-height:1.22;color:{GREY}}}
-.lt .w{{display:inline-block;margin-right:12px}}
-.body{{position:relative;width:820px;height:340px;border-radius:36px;overflow:hidden}}
+.body{{position:relative;width:820px;height:340px;margin-top:14px;border-radius:36px;overflow:hidden}}
+.cap{{height:{CAP_H - 14}px;margin-top:14px;display:flex;align-items:center;justify-content:center;font-size:42px;font-weight:800;color:{INK};white-space:nowrap}}
 .cart{{width:330px;height:340px;display:block;border-radius:30px;overflow:hidden}}
 .row{{display:flex;gap:30px;align-items:center;height:340px}}
 .cc{{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}}
@@ -766,7 +751,6 @@ html,body{{margin:0;background:#000;}}
 <body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="{dur}" data-width="{w}" data-height="{hgt}" data-fps="{fps}">
 <div id="stage">
-<div id="flash" style="position:absolute;inset:0;opacity:0;background:radial-gradient(circle at 50% 45%,rgba(255,255,255,.7),rgba(255,255,255,0) 65%)"></div>
 <div id="bl1" style="position:absolute;left:-150px;top:-100px;width:700px;height:700px;border-radius:350px;background:radial-gradient(circle,rgba(255,150,190,.5),rgba(255,150,190,0) 70%)"></div>
 <div id="bl2" style="position:absolute;left:520px;top:480px;width:700px;height:700px;border-radius:350px;background:radial-gradient(circle,rgba(150,170,255,.45),rgba(150,170,255,0) 70%)"></div>
 {sparks}
