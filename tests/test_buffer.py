@@ -500,3 +500,35 @@ def test_rclone_exit_codes_mean_gone(monkeypatch):
     codes = iter([0, 3, 4, 1])
     monkeypatch.setattr(bp.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=next(codes), stdout=""))
     assert [bp.rclone_remove("x") for _ in range(4)] == [True, True, True, False]  # 3/4 = already absent
+
+
+# ---------- mode "now": publish to the account right away ----------
+NOW_ENV = dict(ENV, VYBEX_BUFFER="now")
+
+
+def test_now_is_a_known_mode_and_a_typo_still_means_off():
+    assert bp.mode_of(CFG, NOW_ENV) == "now" and bp.mode_of(CFG, {"VYBEX_BUFFER": "nov"}) == "off"
+
+
+def test_now_publishes_at_once_without_slots_or_the_queue(tmp_path):
+    out, buf = make_out(tmp_path), FakeBuf()
+    res = run(out, tmp_path, NOW_ENV, buf)
+    assert [r["state"] for r in res] == ["posting", "posting"] and all("due" not in r for r in res)
+    assert all(c["mode"] == "now" and c["due"] is None for c in buf.calls)
+
+
+def test_create_post_payload_for_now_is_sharenow_without_a_time():
+    ok = R(200, {"data": {"createPost": {"post": {"id": "P1"}}}})
+    b, calls = client(iter([ok]))
+    b.create_post("CH", "t", "https://x/v.mp4", "now")
+    q = calls[-1]["variables"]["input"]
+    assert q["mode"] == "shareNow" and "dueAt" not in q and "saveToDraft" not in q and q["schedulingType"] == "automatic"
+    assert q["aiAssisted"] is True and q["metadata"]["tiktok"]["isAiGenerated"] is True
+
+
+def test_a_now_post_that_stays_unsent_for_an_hour_is_a_problem():
+    t0 = NOW - timedelta(hours=2)
+    st = {"a": {"mode": "now", "post_id": "p1", "status": "sending", "uploaded_at": t0.isoformat(), "file": "a.mp4"},
+          "b": {"mode": "now", "post_id": "p2", "status": "sending", "uploaded_at": NOW.isoformat(), "file": "b.mp4"}}
+    probs = bp.refresh_statuses(st, FakeBuf(statuses={"p1": {"status": "sending"}, "p2": {"status": "sent"}}), NOW)
+    assert len(probs) == 1 and "a.mp4" in probs[0] and "sending" in probs[0] and st["b"]["status"] == "sent"

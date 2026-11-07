@@ -6,6 +6,7 @@ Modes (VYBEX_BUFFER env/variable, else config buffer.mode; anything unknown = of
   off    nothing        plan   read-only: checks, free slots, nothing uploaded or created
   draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos get a
                                *notification* (reminder to add the TikTok sound by hand) instead of automatic publishing
+  now    shareNow: the post is published to the account right away (no slot, no queue); nothing is spread over the day
 The Buffer posting schedule cannot be written through the API, so slots are set per post (`dueAt`, UTC). Existing drafts are never edited.
 Hosted files must live until Buffer posts them (it fetches at publish time) and are deleted by age. The MP4 in ready/ is never touched.
 Secrets only from env: BUFFER_API_KEY, CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET.
@@ -27,7 +28,7 @@ import requests
 from .common import ROOT, load_config, safe_err
 
 API = "https://api.buffer.com"
-MODES = ("off", "plan", "draft", "queue")
+MODES = ("off", "plan", "draft", "queue", "now")
 MAX_TEXT = 2200  # TikTok caption limit
 DEFAULT_SLOTS = ["12:00", "17:00", "21:00"]
 
@@ -136,7 +137,7 @@ class Buffer:
 
     def create_post(self, channel_id, text, url, mode, due=None, notify=False):
         inp = {"text": text, "channelId": channel_id, "schedulingType": "notification" if notify else "automatic", "aiAssisted": True,
-               "mode": "customScheduled" if due else "addToQueue",
+               "mode": "shareNow" if mode == "now" else ("customScheduled" if due else "addToQueue"),
                "assets": [{"video": {"url": url, "metadata": {"thumbnailOffset": 2000}}}],
                "metadata": {"tiktok": {"isAiGenerated": True}}}
         if due:
@@ -308,7 +309,7 @@ def refresh_statuses(state, buf, now):
     """Ask Buffer what really happened to the queued posts. -> list of problems (error posts, overdue posts)."""
     problems = []
     for sha, e in state.items():
-        if e.get("mode") != "queue" or not e.get("post_id") or e.get("status") in ("sent", "error"):
+        if e.get("mode") not in ("queue", "now") or not e.get("post_id") or e.get("status") in ("sent", "error"):
             continue
         try:
             p = buf.post_status(e["post_id"])
@@ -320,8 +321,8 @@ def refresh_statuses(state, buf, now):
         if e["status"] == "error":
             e["error"] = ((p.get("error") or {}).get("message") or "unknown")[:200]
             problems.append(f"{e.get('file')}: Buffer failed to publish: {e['error']}")
-        elif e["status"] == "scheduled" and e.get("due") and parse_dt(e["due"]) < now - timedelta(hours=1):
-            problems.append(f"{e.get('file')}: still 'scheduled' an hour after its time")
+        elif e["status"] in ("scheduled", "sending") and (e.get("due") or e.get("uploaded_at")) and parse_dt(e.get("due") or e["uploaded_at"]) < now - timedelta(hours=1):
+            problems.append(f"{e.get('file')}: still '{e['status']}' an hour after its time")
     return problems
 
 
@@ -420,10 +421,10 @@ def publish_one(c, mp4, caption, rec, silent):
             if not twin:
                 raise
             post_id = twin["id"]
-        c.state[sha].update(post_id=post_id, status="draft" if c.mode == "draft" else "scheduled", notification=silent)
+        c.state[sha].update(post_id=post_id, status={"draft": "draft", "now": "sending"}.get(c.mode, "scheduled"), notification=silent)
         if due:
             c.taken.append(due)
-        res = {"state": "draft" if c.mode == "draft" else ("notify" if silent else "scheduled"), "post_id": post_id}
+        res = {"state": "draft" if c.mode == "draft" else ("notify" if silent else "posting" if c.mode == "now" else "scheduled"), "post_id": post_id}
         if due:
             res["due"] = due.astimezone(c.tz).isoformat()
         return res
@@ -446,13 +447,13 @@ def publish_dir(out, cfg, state_path, env=os.environ, buf=None, storage=None, no
     if mode == "off":
         finish(state="off")
         return []
-    need = ["BUFFER_API_KEY"] + (["CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET"] if mode in ("draft", "queue") else [])
+    need = ["BUFFER_API_KEY"] + (["CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET"] if mode in ("draft", "queue", "now") else [])
     missing = [k for k in need if not env.get(k)]
     if missing and not (buf and (storage or mode == "plan")):
         finish(state="skipped", detail="missing secrets: " + ", ".join(missing))
         return []
     buf = buf or Buffer(env["BUFFER_API_KEY"])
-    if mode in ("draft", "queue"):
+    if mode in ("draft", "queue", "now"):
         storage = storage or Cloudinary(env["CLOUDINARY_CLOUD_NAME"], env["CLOUDINARY_API_KEY"], env["CLOUDINARY_API_SECRET"])
     state, results = load_state(state_path), []
     try:
@@ -462,7 +463,7 @@ def publish_dir(out, cfg, state_path, env=os.environ, buf=None, storage=None, no
         taken = [parse_dt(p["dueAt"]) for p in sched if p.get("dueAt")]
         info = {"state": mode, "channel": ch["name"], "timezone": tz.key, "slots": [f"{h:02d}:{m:02d}" for h, m in hm], "scheduled_before": len(sched)}
         if mode != "plan":
-            info["problems"] = refresh_statuses(state, buf, now) if mode == "queue" else []
+            info["problems"] = refresh_statuses(state, buf, now) if mode in ("queue", "now") else []
             info["cleaned"] = cleanup(state, storage, bcfg.get("keep_days", 7), now)
         report["buffer"] = info
         c = SimpleNamespace(mode=mode, channel=ch, state=state, buf=buf, storage=storage, bcfg=bcfg, now=now, tz=tz, hm=hm, taken=taken,
