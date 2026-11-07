@@ -14,16 +14,26 @@ def split_words(words, max_words=8):
 
 
 def _groups(n, widgets):
-    """[(first_line, last_line, widget|None)] covering fragment lines 0..n-1; lines no widget claims get single-line auto groups."""
-    claimed = {}
-    for w in sorted(widgets or [], key=lambda w: min(w["lines"])):
+    """[(first_line, last_line, widget|None, half|None)] covering fragment lines 0..n-1; lines no widget claims get single-line auto groups.
+    A long line may carry two widgets with half 0 and 1 (its first and second half of the words): two cards for one line."""
+    claimed, halves = {}, {}
+    for w in sorted(widgets or [], key=lambda w: (min(w["lines"]), w.get("half") or 0)):
         a, b = min(w["lines"]), min(max(w["lines"]), n - 1)
-        if a < n and not any(i in claimed for i in range(a, b + 1)):
+        h = w.get("half")
+        if h in (0, 1) and a == b < n:
+            if a not in claimed:
+                halves.setdefault(a, {}).setdefault(h, w)
+        elif a < n and not any(i in claimed or i in halves for i in range(a, b + 1)):
             claimed.update({i: (a, b, w) for i in range(a, b + 1)})
     out, i = [], 0
     while i < n:
+        if i in halves:
+            hv = halves[i]
+            out += [(i, i, hv[h], h) for h in (0, 1) if h in hv] if len(hv) == 2 else [(i, i, next(iter(hv.values())), None)]
+            i += 1
+            continue
         a, b, w = claimed.get(i, (i, i, None))
-        out.append((a, b, w))
+        out.append((a, b, w, None))
         i = b + 1
     return out
 
@@ -39,7 +49,16 @@ def build_scenes(analysis, song, cfg, intro=0.0, widgets=None):
     if widgets is None:
         chunks = [(ch, None) for ln in flines for ch in split_words(ln["words"])]
     else:  # one card per widget group: all words of its lines, no 8-word split
-        chunks = [([w for ln in flines[a:b + 1] for w in ln["words"]], wd) for a, b, wd in _groups(len(flines), widgets)]
+        chunks = []
+        for a, b, wd, half in _groups(len(flines), widgets):
+            ws = [w for ln in flines[a:b + 1] for w in ln["words"]]
+            if half is not None:
+                if len(ws) < 4:  # too short to show twice: the first half's card takes the whole line
+                    if half == 1:
+                        continue
+                else:
+                    ws = ws[:len(ws) // 2] if half == 0 else ws[len(ws) // 2:]
+            chunks.append((ws, wd))
     for ch, wd in chunks:
         card = {
             "role": "lyric", "text": " ".join(w["w"] for w in ch),

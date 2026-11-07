@@ -16,3 +16,19 @@ def test_versus_and_auto_rules():
     assert "Бабки" in h and js
     assert rw._auto("Ты ему сперва дала, потом полюбила", "")["kind"] == "pulse"
     assert rw._auto("Ты ему сперва дала, потом полюбила", "pulse") == {}
+
+
+def test_quote_row_cleans_vocalise_and_hides_doubtful_lines():
+    from pipeline import render_widgets as rw
+    assert rw._quote({"text": "У -у -у, кругу лягу У -у -у, три -один -два"}) == "кругу лягу три один два"
+    assert rw._quote({"text": "Бензин был лепнет к моим рукам", "low_conf": [2]}) == ""  # whisper doubted a word: no quote
+    assert len(rw._quote({"text": "Мы начинали с самого низа Запомни нас такими"})) <= 38
+
+
+def test_drawn_card_shows_big_badge_and_chips_and_author_keeps_them():
+    from pipeline import author, render_widgets as rw
+    svg = '<rect width="800" height="420" fill="#eef"/><circle cx="400" cy="210" r="80" fill="#f49"/>'
+    h, j = rw._body("draw", {"kind": "draw", "frames": [svg], "big": "03:32", "chips": ["никому не говорим", "пока не поздно"]}, 0, 0.0, 3.0, "t")
+    assert 'class="dbig">03:32' in h and h.count("<span>") == 2 and any("#dc0" in x for x in j)
+    w = author.sanitize_widgets([{"lines": [0], "kind": "draw", "frames": [svg], "chips": ["а", "б", "в", " "], "big": "×2"}], 1)
+    assert w[0]["chips"] == ["а", "б"] and w[0]["big"] == "×2"

@@ -109,6 +109,32 @@ def autospec(entry, n, date, recent, cfg, mode, audio_rel, trend_tags=()):
     return spec
 
 
+CARDS_LOG = "cards.jsonl"
+
+
+def recall_cards(acc, n=3):
+    """The card record of the last n built videos (accounts/<acc>/cards.jsonl, one JSON per line), oldest first; never raises."""
+    f = Path(acc) / CARDS_LOG
+    out = []
+    for ln in (f.read_text(encoding="utf-8").splitlines() if f.exists() else [])[-n:]:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            pass
+    return out
+
+
+def remember_cards(acc, date, song, spec):
+    """Append what this video was made of (kinds, hook, theme): the next runs avoid the same recipe, `pipeline insights` joins it with views."""
+    ws = spec.get("widgets") or []
+    rec = {"date": date, "song": song, "hook": spec.get("hook", ""), "theme": spec.get("theme", "light"), "n_cards": len(ws),
+           "kinds": [w.get("kind") for w in ws], "draw_share": round(sum(w.get("kind") == "draw" for w in ws) / max(1, len(ws)), 2),
+           "details": sum(bool(w.get("big") or w.get("chips")) for w in ws)}
+    Path(acc).mkdir(parents=True, exist_ok=True)
+    with open(Path(acc) / CARDS_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def fetch_audio(entry, cfg, mode):
     """Resolve an audio file: queue file -> local match -> allowed sources. Returns (path|None, statuses)."""
     ad = ROOT / cfg["audio_dir"]
@@ -138,7 +164,10 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     used, recent = parse_log((acc / "log.md").read_text(encoding="utf-8")) if (acc / "log.md").exists() else (set(), [])
     out = root / "out" / date
     out.mkdir(parents=True, exist_ok=True)
-    report, done, day_kinds = [], 0, set()
+    past = recall_cards(acc)  # earlier runs count too: the same recipe on the next day looks the same
+    report, done = [], 0
+    day_kinds = {k for r in past for k in r.get("kinds", []) if k not in ("draw", "scene")}
+    themes = [r.get("theme", "light") for r in past]
     for entry in queue:
         if done >= count:
             break
@@ -183,10 +212,12 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             rel = str(Path(audio).resolve().relative_to(root)).replace("\\", "/") if mode == "auto" else None
             spec = autospec(entry, n, date, recent, cfg, mode, rel, trend_tags)
             entry["avoid_kinds"] = sorted(day_kinds)
+            entry["recent_themes"] = themes
             analysis, spec, rec["stages"]["author"] = st["author"](entry, analysis, spec, cfg)
             if rec["stages"]["author"].startswith("fallback"):  # keyword cards look alike: never let that pass unnoticed
                 rec["note"] = "Claude author failed, this video uses keyword cards: " + rec["stages"]["author"]
             day_kinds |= {w.get("kind") for w in spec.get("widgets") or [] if w.get("kind")}  # Claude writes cards/hook; falls back to auto
+            themes.append(spec.get("theme", "light"))
             (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
             sid, lines, video = st["build"](out, n, cfg)
@@ -194,6 +225,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             rec["qa"] = [f"{s} {nm} {d}".strip() for s, nm, d in lines if s != "PASS"]
             if video:
                 rec["ready"] = pack(out, n, spec, mode, out / "ready")
+                remember_cards(acc, date, rec["song"], spec)
                 done += 1
                 recent.append((spec["metaphor"], spec["palette"]))
         except Exception as e:  # one song must never stop the batch

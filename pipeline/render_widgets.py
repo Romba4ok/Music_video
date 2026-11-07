@@ -9,6 +9,7 @@ import html
 import json
 import math
 import random
+import re
 import zlib
 
 from . import svg_safe
@@ -135,6 +136,14 @@ def _clip(text, n):
     return text if len(text) <= n else text[:n - 1].rstrip() + "…"
 
 
+def _quote(s):
+    """The sung line for the card's quote row. Empty when whisper doubted any word of it: a wrong word on screen is worse than none."""
+    if s.get("low_conf"):
+        return ""
+    t = re.sub(r"(?<!\w)[уУаАоО](?:\s*-\s*[уУаАоО])+,?\s*", "", s["text"])  # vocalise «У -у -у»
+    return _clip(re.sub(r"\s+", " ", t.replace(" -", " ")).strip(" ,"), 38)
+
+
 def _full(artist, title, n):
     """'Artist — Title' when it fits, else just the title: a clipped «9грамм BUGZ feat. Mic Dogg — Та…» hides the song's name."""
     t = f"{artist} — {title}" if artist else title
@@ -187,8 +196,7 @@ def _camera_art(i, w):
     hearts = "".join(f'<path id="ht{i}_{q}" transform="translate({300 + q * 45} {150 + (q % 2) * 40}) scale(1.4)" d="{HEART}" fill="#ff4f8b" opacity="0"/>' for q in range(5))
     bub = _clip(str(w.get("bubble", "")), 10)
     return (_bg(f"g{i}", "#3d1f66", "#1a0f3a", True) + bokeh +
-            '<circle cx="400" cy="400" r="150" fill="#ff7ac8"/><circle cx="400" cy="205" r="78" fill="#ffd3b8"/><path d="M322 190Q400 90 478 190Q440 140 400 140Q360 140 322 190Z" fill="#6b3b2a"/>'
-            '<circle cx="372" cy="210" r="7" fill="#2a1a1a"/><circle cx="428" cy="210" r="7" fill="#2a1a1a"/><path d="M375 242Q400 262 425 242" stroke="#c0455f" stroke-width="6" fill="none" stroke-linecap="round"/>'
+            '<circle cx="400" cy="400" r="150" fill="#e9e4ff"/><circle cx="400" cy="205" r="78" fill="#e9e4ff"/>'  # a faceless silhouette, not a smiley
             f'<g id="vf{i}">{corners}</g>'
             f'<text x="400" y="78" text-anchor="middle" font-size="30" font-weight="800" fill="#ffd400">ФОКУС: {_esc(w.get("focus", "ЦЕЛЬ"), 12).upper()}</text>'
             f'<circle id="rec{i}" cx="58" cy="76" r="9" fill="#ff3b3b"/><text x="78" y="85" font-size="24" font-weight="800" fill="#fff">REC</text>'
@@ -314,8 +322,16 @@ def _body(kind, w, i, s, d, text):
         if frames:
             layers = "".join(f'<g id="df{i}_{k}" style="transform-origin:400px 210px">{svg_safe.scope(m, i if len(frames) == 1 else f"{i}f{k}")}</g>'
                              for k, m in enumerate(frames))
+            over = ""  # app-like details on top of the picture: a big word/number badge and up to two short phrase chips
+            if w.get("big"):
+                over += f'<div id="db{i}" class="dbig">{_esc(w["big"], 12)}</div>'
+                j.append(f'tl.fromTo("#db{i}",{{opacity:0,y:-20,scale:.85}},{{opacity:1,y:0,scale:1,duration:.4,ease:"back.out(1.8)"}},{at(.3)});')
+            chips = [c for c in (w.get("chips") or [])[:2] if c]
+            if chips:
+                over += f'<div id="dc{i}" class="dchips">' + "".join(f'<span>{_esc(c, 22)}</span>' for c in chips) + '</div>'
+                j.append(f'tl.fromTo("#dc{i}",{{opacity:0,y:24}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{at(.55)});')
             h = (f'<div class="sc"><svg class="cart" style="width:820px;height:340px" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice">'
-                 f'<g id="dr{i}" style="transform-origin:400px 210px">{layers}</g></svg></div>')
+                 f'<g id="dr{i}" style="transform-origin:400px 210px">{layers}</g></svg>{over}</div>')
             step = min(1.8, d / len(frames))  # about once a second; fewer frames than seconds are spread over the card so nothing stands still
             for k in range(len(frames)):
                 t = round(s + k * step, 3)
@@ -364,12 +380,10 @@ AUTO = [  # (stems, widget): meaning-by-keyword fallback when the spec has no ha
     (("год", "лет", "помн", "раньше", "прошл", "вчера"), {"kind": "polaroid", "from": 2019, "to": 2026, "label": "тогда и сейчас"}),
     (("холод", "боль", "болел", "болен", "мерз", "темпер"), {"kind": "thermo"}),
     (("путь", "дорог", "иду", "идти", "домой", "город", "шаг"), {"kind": "route", "from": "Откуда", "to": "Куда"}),
-    (("счасть", "радост", "улыб", "смех", "мечт"), {"kind": "ring", "from": 10, "to": 100, "label": "счастье"}),
     (("цель", "стрел", "враг", "бой"), {"kind": "target"}),
     (("деньг", "бабк", "рубл", "тенге", "куш", "монет", "богат", "нищ"), {"kind": "counter", "art": "coins", "label": "баланс", "from": 1000, "to": 0, "unit": "₸"}),
     (("?", "почему", "зачем", "кто ", "как ", "что ж"), {"kind": "search"}),
     (("глаз", "смотр", "взгляд", "вижу", "видел", "видишь"), {"kind": "camera"}),
-    (("один", "одинок", "никто", "толп", "миллиард", "люди"), {"kind": "dots"}),
     ((" или ", "выбор", "либо", "решил"), {"kind": "versus"}),
     (("сказал", "говорил", "спросил", "ответ", "слов", "молч"), {"kind": "chat"}),
 ]
@@ -407,11 +421,12 @@ def readable(col, bg=WORST_BG, need=3.1):
             return h
     return INK
 HOLD_MAX = 4.5  # s a card stays after its line ends when the vocal pauses (analysis refuses windows with a longer pause: whisper.max_gap_sec)
-CARD_TOP, CARD_ZOOM, CAP_H = 180, 1.04, 84  # card clip top (stage px) and its constant zoom; the island + notifications live above y=140, the card's zoomed top edge stays at ~168
+CARD_TOP, CARD_ZOOM, CAP_H, QL_H = 180, 1.04, 84, 46  # card clip top (stage px) and its constant zoom; the island + notifications live above y=140, the card's zoomed top edge stays at ~168
 BODY_X, BODY_Y = 130, CARD_TOP + 30 + 64 + 14  # stage coords of the 820x340 card body (pad + head + gap)
 ANCH = {"pair": (410, 150), "pulse": (190, 110), "route": (660, 60), "venn": (410, 170), "ring": (410, 150), "thermo": (241, 272),
         "alert": (410, 190), "target": (410, 170), "polaroid": (165, 150), "versus": (200, 130), "counter": (170, 170),
         "search": (410, 45), "camera": (410, 170), "chat": (200, 170), "dots": (410, 88), "scene": (410, 170)}
+CFG_LYRIC_LINE = False  # True = a static quote of the sung line under each picture; the owner chose the picture alone (2026-11-08)
 CARD_H = 478  # 30+64 head+14+340 body+30 padding; fixed so every card sits the same way
 
 
@@ -447,6 +462,11 @@ def build_html(plan, spec, cfg):
     OY = (hgt - SQ) // 2
     dur, intro = plan["duration"], plan.get("intro", 0.0)
     b1, b2, b3, acc, ta, tb = PAL[spec["palette"]]
+    dark = spec.get("theme") == "dark"  # night mood: dark glowing background, light text outside the (still white) cards
+    if dark:
+        b1, b2, b3 = "#15102b", "#241a4a", "#1a1540"
+    TX, TX2, TXF, TXS, TRK = (("#f6f2ff", "#cfc8ee", "#ffffff", f"0 0 34px {ta}", "rgba(255,255,255,.28)") if dark
+                              else (INK, "#5f5a7c", readable(ta), "0 6px 24px rgba(255,255,255,.8)", "rgba(20,20,31,.15)"))
     song = spec["song"]
     artist, title = song.get("artist", ""), song["title"]
     handle = (cfg.get("handle") or "vybex").strip().lstrip("@")
@@ -523,7 +543,8 @@ def build_html(plan, spec, cfg):
             js.append(f'tl.to("#eq{k}",{{scaleY:{rng.uniform(.3, 1):.2f},duration:.4,ease:"sine.inOut"}},{round(tq, 3)});')
         tq += .45
     has_cap = any((x.get("widget") or {}).get("cap") for x in plan["scenes"])  # caption row under the picture, same height on every card
-    card_h = CARD_H + (CAP_H if has_cap else 0)
+    has_ql = bool(CFG_LYRIC_LINE)  # one static quote of the sung line under the picture (never word-by-word subtitles)
+    card_h = CARD_H + (CAP_H if has_cap else 0) + (QL_H if has_ql else 0)
     top0 = CARD_TOP  # the card grows downwards only: its top edge must never reach the island / notification band (y < 140)
     body_y = top0 + 30 + 64 + 14
     prev, couriers = "", []
@@ -538,24 +559,30 @@ def build_html(plan, spec, cfg):
         if d <= 0:
             continue
         outro = s["role"] == "outro"
-        if outro:  # end: the last card collapses into an orb that grows into a glowing sphere + confetti ring + author chip
+        if outro:  # end card (mirrors the intro): the last card collapses into an orb, then icon + big title + credit + confetti ring
             t0 = s["start"]
+            tt = html.escape(_clip(title.upper(), 24))
+            fs2 = max(60, min(112, int(900 / (0.78 * max(len(_clip(title, 24)), 1)))))
             clips.append(
                 f'<div id="clip{i}" class="clip" data-start="{t0}" data-duration="{d}" data-track-index="3" style="left:0;top:0;width:{w}px;height:{SQ}px">'
-                f'<svg id="oring" viewBox="0 0 400 400" style="position:absolute;left:340px;top:240px;width:400px;height:400px"><circle cx="200" cy="200" r="186" fill="none" '
-                f'stroke="#fff" stroke-width="4" opacity=".9"/></svg>'
-                f'<div id="osph" style="position:absolute;left:390px;top:290px;width:300px;height:300px;border-radius:150px;'
-                f'background:radial-gradient(circle at 35% 30%,#fff 0 5%,#ff9ad0 15%,#ff4fa3 48%,#9b6bff 100%);box-shadow:0 0 150px 40px rgba(255,79,163,.45)"></div>'
-                f'<div id="ochip" class="chip"><i></i>{html.escape(credit)}</div></div>')  # the ending is a glowing orb + confetti, no title card
-            js.append(f'tl.fromTo("#osph",{{scale:.2,opacity:0}},{{scale:1,opacity:1,duration:.6,ease:"back.out(1.6)",transformOrigin:"50% 50%"}},{round(t0 + .2, 3)});')
-            js.append(f'tl.fromTo("#oring",{{scale:.6,opacity:0}},{{scale:1,opacity:.9,duration:.5,ease:"power2.out",transformOrigin:"50% 50%"}},{round(t0 + .3, 3)});')
-            js.append(f'tl.fromTo("#osph",{{scale:1}},{{scale:1.06,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .85, 3)});')
-            js.append(f'tl.fromTo("#oring",{{scale:1}},{{scale:1.07,duration:1.1,yoyo:true,repeat:{max(1, int(d / 1.1))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .85, 3)});')
-            js.append(f'tl.fromTo("#ochip",{{opacity:0,y:14}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(t0 + .45, 3)});')
+                f'<svg id="oring" viewBox="0 0 400 400" style="position:absolute;left:340px;top:240px;width:400px;height:400px"><circle cx="200" cy="200" r="180" fill="none" '
+                f'stroke="{acc}" stroke-width="5" stroke-dasharray="3 22" stroke-linecap="round" opacity=".55"/></svg>'
+                f'<div id="oicon" style="position:absolute;left:430px;top:330px;width:220px;height:220px;border-radius:54px;background:linear-gradient(135deg,{ta},{tb});'
+                f'box-shadow:0 20px 50px rgba(90,70,160,.3);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" width="120" height="120">'
+                f'<path d="M9 18V6l10-2v12" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="7" cy="18" r="3" fill="#fff"/><circle cx="17" cy="16" r="3" fill="#fff"/></svg></div>'
+                f'<div id="otx" style="position:absolute;left:0;top:585px;width:{w}px;display:flex;flex-direction:column;align-items:center;gap:12px">'
+                f'<div class="fbig" style="font-size:{fs2}px">{tt}</div><div class="isub">{html.escape(_clip(artist, 30))}</div>'
+                f'<div class="icredit" style="font-size:46px">{html.escape(credit)}</div></div></div>')
+            js.append(f'tl.fromTo("#oring",{{scale:.6,opacity:0}},{{scale:1,opacity:1,duration:.4,ease:"power2.out",transformOrigin:"50% 50%"}},{round(t0 + .2, 3)});')
+            js.append(f'tl.to("#oring",{{rotation:150,duration:{d},ease:"none",transformOrigin:"50% 50%"}},{t0});')
+            js.append(f'tl.fromTo("#oicon",{{scale:.2,rotation:-25,opacity:0}},{{scale:1,rotation:0,opacity:1,duration:.5,ease:"back.out(1.8)"}},{round(t0 + .2, 3)});')
+            js.append(f'tl.fromTo("#otx",{{opacity:0,y:24}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(t0 + .45, 3)});')
             couriers.append(f'<div id="orb" class="cr" data-layout-allow-occlusion style="left:480px;top:403px;width:120px;height:120px;border-radius:60px;'
                             f'background:radial-gradient(circle,#fff 0 20%,{ta} 42%,rgba(255,255,255,0) 72%)"></div>')
             js.append(f'tl.fromTo("#orb",{{scale:.2,opacity:0}},{{scale:1,opacity:1,duration:.3,ease:"power2.out"}},{round(t0 - .2, 3)});')
             js.append(f'tl.to("#orb",{{scale:2.8,opacity:0,duration:.35,ease:"power2.out"}},{round(t0 + .15, 3)});')
+            js.append(f'tl.fromTo("#oicon",{{y:0}},{{y:-10,duration:.8,yoyo:true,repeat:{max(1, int(d / .8))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .75, 3)});')
+            js.append(f'tl.fromTo("#otx",{{scale:1}},{{scale:1.04,duration:.9,yoyo:true,repeat:{max(1, int(d / .9))},ease:"sine.inOut",immediateRender:false}},{round(t0 + .9, 3)});')
             for q in range(14):
                 ang = q / 14 * 6.283
                 clips.append(f'<svg id="ob{q}" class="sp" style="left:{525 + int(110 * math.cos(ang))}px;top:{425 + int(110 * math.sin(ang))}px;width:30px;height:30px;opacity:0" viewBox="0 0 10 10">'
@@ -576,7 +603,8 @@ def build_html(plan, spec, cfg):
             dapp, dicon, dcat = wk.DEFAULT_APP.get(kind, (ARTS[k][1], APP_ICON.get(wd.get("art"), ARTS[k][2]), ""))
             app, icol, cat = wd.get("app") or dapp, wd.get("icon") or dicon, wd.get("cat", dcat)
             accent = "#ff4f6d" if icol.lower() in ("#14141f", "#0b0b10") else icol
-            text = _clip(s["text"], 100)  # the lyric is never shown on the card: only the picture (and a few kinds' own short labels) carries it
+            text = _clip(s["text"], 100)  # shown only as one static quote line (.ql); no per-word subtitles
+            ql = _quote(s)
             b_html, b_js = _body(kind, wd, i, s["start"], d, text)
             life = round(min(d + .6, dur - s["start"]), 3)  # the card lingers behind the next one (stack)
             dots = "".join(f'<i class="dot{" on" if q == min(i, n_cards - 1) else ""}"></i>' for q in range(n_cards))
@@ -586,7 +614,8 @@ def build_html(plan, spec, cfg):
                 f'<div id="sw{i}" style="position:absolute;left:0;top:0;width:900px;height:{card_h + 40}px">'
                 f'<div id="card{i}" class="wcard" style="height:{card_h}px"><div class="shn"><i id="sh{i}"></i></div><div class="head"><span id="ap{i}" class="app" style="background:{icol}"></span>{head}</div>'
                 f'<div id="bd{i}" class="body">{b_html}</div>'
-                + (f'<div id="cp{i}" class="cap">{_esc(wd.get("cap", ""), 26)}</div>' if has_cap else "") + '</div>'
+                + (f'<div id="cp{i}" class="cap">{_esc(wd.get("cap", ""), 26)}</div>' if has_cap else "")
+                + (f'<div id="ql{i}" class="ql">«{html.escape(ql)}»</div>' if has_ql and ql else "") + '</div>'
                 f'<div class="dots" style="top:{card_h + 16}px">{dots}</div></div></div>')
             # the card slides in fully opaque: while it faded in, its text sat on top of whatever the previous card showed (contrast 1.9:1)
             js.append(f'tl.fromTo("#clip{i}",{{opacity:1,scale:.92,y:150,x:-40,rotation:-5,rotationX:-12,transformPerspective:900,filter:"blur(10px)"}},'
@@ -624,6 +653,8 @@ def build_html(plan, spec, cfg):
             js.extend(b_js)
             if has_cap and wd.get("cap"):  # the short caption of the picture comes in a moment after the card itself
                 js.append(f'tl.fromTo("#cp{i}",{{opacity:0,y:12}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(s["start"] + .55, 3)});')
+            if has_ql and ql:
+                js.append(f'tl.fromTo("#ql{i}",{{opacity:0,y:10}},{{opacity:1,y:0,duration:.4,ease:"power2.out"}},{round(s["start"] + .45, 3)});')
             tsh = s["start"] + .7  # light sweep across the card, repeated
             while tsh < s["end"] - .3:
                 js.append(f'tl.fromTo("#sh{i}",{{x:0}},{{x:1300,duration:.9,ease:"power1.inOut",immediateRender:false}},{round(tsh, 3)});')
@@ -676,11 +707,11 @@ html,body{{margin:0;background:#000;}}
 .sp{{position:absolute;opacity:.7}}
 .cr{{position:absolute;left:0;top:0;width:56px;height:56px;border-radius:28px;opacity:0;z-index:5}}
 .clip{{position:absolute}}
-.icredit{{text-align:center;font-weight:900;font-size:58px;color:{INK}}}
-.isub{{text-align:center;font-weight:700;font-size:40px;color:#5f5a7c}}
-.fbig{{text-align:center;font-weight:900;font-size:88px;line-height:1.05;letter-spacing:-1px;color:{readable(ta)};text-shadow:0 6px 24px rgba(255,255,255,.8)}}
-.stat{{position:absolute;font-weight:800;font-size:34px;color:{INK}}}
-.batt{{position:absolute;width:62px;height:28px;box-sizing:border-box;border:3px solid {INK};border-radius:9px;overflow:hidden}}
+.icredit{{text-align:center;font-weight:900;font-size:58px;color:{TX}}}
+.isub{{text-align:center;font-weight:700;font-size:40px;color:{TX2}}}
+.fbig{{text-align:center;font-weight:900;font-size:88px;line-height:1.05;letter-spacing:-1px;color:{TXF};text-shadow:{TXS}}}
+.stat{{position:absolute;font-weight:800;font-size:34px;color:{TX}}}
+.batt{{position:absolute;width:62px;height:28px;box-sizing:border-box;border:3px solid {TX};border-radius:9px;overflow:hidden}}
 .island{{position:absolute;left:260px;top:44px;width:560px;height:96px;border-radius:48px;background:#0b0b10;display:flex;align-items:center;gap:16px;padding:0 24px 0 20px;box-sizing:border-box}}
 .ico{{width:60px;height:60px;border-radius:14px;background:#2a2a38;display:flex;align-items:center;justify-content:center;flex:none}}
 .itxt{{display:flex;flex-direction:column;flex:1;min-width:0}}
@@ -697,6 +728,7 @@ html,body{{margin:0;background:#000;}}
 .ht b{{font-size:36px;font-weight:800;color:{INK}}}
 .ht em{{font-style:normal;font-size:22px;font-weight:700;color:#7a5cff}}
 .body{{position:relative;width:820px;height:340px;margin-top:14px;border-radius:36px;overflow:hidden}}
+.ql{{height:{QL_H - 8}px;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:600;font-style:italic;color:{GREY};white-space:nowrap;overflow:hidden;padding:0 30px}}
 .cap{{height:{CAP_H - 14}px;margin-top:14px;display:flex;align-items:center;justify-content:center;font-size:42px;font-weight:800;color:{INK};white-space:nowrap}}
 .cart{{width:330px;height:340px;display:block;border-radius:30px;overflow:hidden}}
 .row{{display:flex;gap:30px;align-items:center;height:340px}}
@@ -717,6 +749,9 @@ html,body{{margin:0;background:#000;}}
 .sbig{{position:absolute;left:30px;top:20px;font-size:84px;font-weight:900;text-shadow:0 4px 18px rgba(0,0,0,.35)}}
 .emb{{position:absolute;left:310px;top:50px;width:200px;height:200px}}
 .spill{{position:absolute;left:50%;bottom:22px;margin-left:-190px;width:380px;height:64px;border-radius:32px;background:#fff;display:flex;align-items:center;justify-content:center;gap:12px;font-size:30px;font-weight:800;color:{INK};white-space:nowrap}}
+.dbig{{position:absolute;right:22px;top:18px;padding:6px 26px;border-radius:30px;background:#fff;font-size:54px;font-weight:900;color:{INK};white-space:nowrap}}
+.dchips{{position:absolute;left:22px;bottom:18px;display:flex;gap:12px}}
+.dchips span{{padding:8px 22px;border-radius:26px;background:#fff;font-size:28px;font-weight:700;color:{INK};white-space:nowrap}}
 .spill i{{width:14px;height:14px;border-radius:7px;background:#ff4f6d;display:block}}
 .chat{{display:flex;flex-direction:column;gap:20px;justify-content:center;height:340px}}
 .bub{{max-width:640px;padding:22px 32px;border-radius:38px;font-size:38px;font-weight:700;line-height:1.2}}
@@ -729,15 +764,15 @@ html,body{{margin:0;background:#000;}}
 .dsub{{text-align:center;font-size:28px;font-weight:700;color:#5f5a7c}}
 .dots{{position:absolute;left:0;width:900px;display:flex;justify-content:center;gap:14px}}
 .dot{{width:14px;height:14px;border-radius:7px;background:#b9b4d6;display:block}}
-.dot.on{{width:34px;background:{INK}}}
+.dot.on{{width:34px;background:{TX}}}
 .chip{{position:absolute;left:370px;top:825px;width:340px;height:56px;border-radius:28px;background:rgba(255,255,255,.92);
  display:flex;align-items:center;justify-content:center;gap:12px;font-size:28px;font-weight:800;color:{INK};box-shadow:0 8px 24px rgba(90,70,160,.15)}}
 .chip i{{width:30px;height:30px;border-radius:15px;background:conic-gradient({ta},{tb},{ta});display:block}}
-.ptitle{{position:absolute;left:60px;top:893px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:{INK}}}
-.track{{position:absolute;left:160px;top:986px;width:760px;height:8px;border-radius:4px;background:rgba(20,20,31,.15)}}
+.ptitle{{position:absolute;left:60px;top:893px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:{TX}}}
+.track{{position:absolute;left:160px;top:986px;width:760px;height:8px;border-radius:4px;background:{TRK}}}
 .thumb{{position:absolute;left:150px;top:980px;width:20px;height:20px;border-radius:10px;background:#fff;box-shadow:0 2px 8px rgba(40,30,80,.3)}}
 #fill{{height:8px;border-radius:4px;background:linear-gradient(90deg,{ta},{tb})}}
-.tm{{position:absolute;top:1004px;font-size:26px;font-weight:700;color:#5f5a7c}}
+.tm{{position:absolute;top:1004px;font-size:26px;font-weight:700;color:{TX2}}}
 .isc{{display:flex;align-items:center;gap:16px;flex:1;min-width:0;height:100%}}
 .nc{{position:absolute;left:0;top:0;width:560px;height:96px;display:flex;align-items:center;gap:16px;padding:0 24px 0 20px;box-sizing:border-box;opacity:0}}
 .banner{{width:920px;height:112px;box-sizing:border-box;border-radius:56px;background:rgba(20,20,31,.95);display:flex;align-items:center;gap:20px;padding:0 34px 0 22px;box-shadow:0 18px 44px rgba(20,20,40,.4)}}
@@ -746,7 +781,7 @@ html,body{{margin:0;background:#000;}}
 .banner .itxt span{{font-size:25px}}
 .shn{{position:absolute;inset:0;border-radius:60px;overflow:hidden;pointer-events:none}}
 .shn i{{position:absolute;top:-50px;left:-260px;width:160px;height:760px;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(190,170,255,.35),rgba(255,255,255,0));transform:skewX(-20deg)}}
-.batt i{{display:block;height:100%;width:70%;background:{INK}}}
+.batt i{{display:block;height:100%;width:70%;background:{TX}}}
 </style></head>
 <body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="{dur}" data-width="{w}" data-height="{hgt}" data-fps="{fps}">

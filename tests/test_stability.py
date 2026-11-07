@@ -470,3 +470,37 @@ def test_frames_follow_each_other_about_once_a_second():
     assert any('"#df4_0"' in l and "opacity:0" in l for l in js)  # and the previous one leaves
     h1, j1 = rw._body("draw", {"svg": GOOD}, 5, 0.0, 3.0, "x")  # a single drawing still works as before
     assert h1.count('id="df5_') == 1 and not any("opacity:1,duration:.3" in l for l in j1)
+
+
+def test_a_long_line_can_be_two_cards_and_empty_lines_join_a_neighbour():
+    from pipeline import author, script_gen
+    words = lambda t0, n: [{"w": f"w{k}", "s": t0 + k * .5, "e": t0 + k * .5 + .4, "p": .9} for k in range(n)]
+    lines = [{"start": 0, "end": 4, "text": "a", "words": words(0, 8)}, {"start": 4.5, "end": 5.5, "text": "у-у", "words": words(4.5, 2)},
+             {"start": 6, "end": 8, "text": "b", "words": words(6, 4)}]
+    an = {"lines": lines, "fragment": {"first": 0, "last": 2, "start": 0.0, "end": 8.0}, "beats": []}
+    ws = author.sanitize_widgets([{"lines": [0], "kind": "scene", "art": "moon", "half": 0}, {"lines": [0], "kind": "scene", "art": "city", "half": 1},
+                                  {"lines": [1, 2], "kind": "scene", "art": "eye"}, {"lines": [0], "kind": "scene", "art": "rain"}], 3)
+    assert [(w["lines"], w.get("half")) for w in ws] == [([0], 0), ([0], 1), ([1, 2], None)]  # the 4th overlaps line 0: dropped
+    sc = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}}, widgets=ws)["scenes"]
+    assert [len(s["words"]) for s in sc if s["role"] == "lyric"] == [4, 4, 6]  # 8 words split 4+4; the vocalise joins the last card
+
+
+def test_cards_are_remembered_between_runs_and_joined_with_views(tmp_path):
+    from pipeline import batch, insights
+    acc = tmp_path / "acc"
+    for i, th in enumerate(("light", "dark", "dark")):
+        batch.remember_cards(acc, f"2026-11-0{i + 1}", f"A — S{i}", {"hook": "h", "theme": th, "widgets": [{"kind": "draw", "big": "x"}, {"kind": "pair"}]})
+    past = batch.recall_cards(acc, 2)
+    assert [r["song"] for r in past] == ["A — S1", "A — S2"] and past[0]["draw_share"] == .5 and past[0]["details"] == 1
+    (acc / "views.csv").write_text("song,views\na — s0,100\nA — S1,300\n", encoding="utf-8")
+    rows, out = insights.table(batch.recall_cards(acc, 10), insights.load_views(acc / "views.csv"))
+    assert sorted(r["views"] for r in rows) == [100, 300] and ("theme", "dark", 1, 300) in out
+
+
+def test_dark_theme_renders_light_text_on_a_dark_stage():
+    from pipeline import render_widgets as rw, script_gen
+    an = {"lines": [{"start": 0, "end": 3, "text": "т", "words": [{"w": "т", "s": 0, "e": 1, "p": .9}]}], "fragment": {"first": 0, "last": 0, "start": 0.0, "end": 3.0}, "beats": []}
+    plan = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}})
+    spec = {"palette": "dusk", "song": {"artist": "A", "title": "T"}, "hook": "X", "metaphor": "love"}
+    light, dark = rw.build_html(plan, spec, CFG), rw.build_html(plan, dict(spec, theme="dark"), CFG)
+    assert "#15102b" in dark and "#15102b" not in light and ".ptitle{position:absolute;left:60px;top:893px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:#f6f2ff" in dark

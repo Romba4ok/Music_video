@@ -16,10 +16,11 @@ from .common import ROOT
 from .render_widgets import ART_KEYS, KINDS
 
 KEYS = ("kind", "app", "cat", "cap", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
-        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion")
+        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion", "chips")
 NUM = ("from", "to", "fill", "zoom", "shift")  # `from`/`to` are numbers for most kinds and place names for route
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+NUMBER_KINDS = ("ring", "dots", "counter")  # their big number reads as a fact: kept only when the line itself holds that number (as digits)
 
 
 STYLES = ("акварель с мягкими разводами", "вырезанная из бумаги аппликация в несколько слоёв", "плоские яркие стикеры",
@@ -28,10 +29,10 @@ STYLES = ("акварель с мягкими разводами", "выреза
 
 
 def variety(rng=None):
-    """A different brief on every call (system random, nothing stored): 4 template kinds are banned and the drawings get another style, so
+    """A different brief on every call (system random, nothing stored): 6 template kinds are banned and the drawings get another style, so
     two videos never come out of the same recipe even when the lines look alike. Only banned kinds that exist in the renderer are named."""
     rng = rng or random.SystemRandom()
-    ban = rng.sample([k for k in KINDS if k not in ("draw", "scene")], 4)
+    ban = rng.sample([k for k in KINDS if k not in ("draw", "scene")], 6)
     return (f"Для этого ролика НЕ используй виды: {', '.join(ban)}. Стиль всех рисунков `draw` в этом ролике: {rng.choice(STYLES)}. "
             f"Рисуй узнаваемые предметы из жизни (ключ, чашка, дверь, окно, телефон), а не абстрактные фигуры и не неон. Образы необычные, без очевидных (сердце, часы, дождь).")
 
@@ -43,8 +44,11 @@ def build_prompt(entry, lines, cfg):
     avoid = entry.get("avoid_kinds") or []  # kinds the other videos of today's batch already use: ask for different ones
     note = f"Другие ролики сегодня уже используют: {', '.join(avoid)}. Выбирай другие виды и другие art." if avoid else ""
     note = (note + " " + variety()).strip()
+    rt = entry.get("recent_themes") or []
+    theme = (f"Последние ролики были {'тёмные' if rt[-1] == 'dark' else 'светлые'}: если песня позволяет, сделай этот {'светлым' if rt[-1] == 'dark' else 'тёмным'} для разнообразия."
+             if len(rt) >= 2 and rt[-1] == rt[-2] else "")
     return (tpl.replace("{{ARTIST}}", entry.get("artist", "")).replace("{{TITLE}}", entry.get("title", "")).replace("{{LINES}}", txt)
-            .replace("{{AVOID}}", note)
+            .replace("{{AVOID}}", note).replace("{{THEME}}", theme)
             .replace("{{MIN}}", str(lo)).replace("{{MAX}}", str(hi)).replace("{{TARGET}}", f"{lo + 4}–{lo + 12}"))
 
 
@@ -81,14 +85,20 @@ def _notify(n):
     return {"app": _s(n.get("app", ""), 18), "text": _s(n["text"], 36), "icon": icon}
 
 
-def sanitize_widgets(widgets, n_lines):
-    """Keep only known keys/kinds, clip text, clamp indices, drop overlaps. Returns a list safe for spec["widgets"]."""
-    out, used = [], set()
+def _quotes_number(o, text):
+    return str(o.get("to", "")).split(".")[0] in re.findall(r"\d+", text)
+
+
+def sanitize_widgets(widgets, n_lines, texts=None):
+    """Keep only known keys/kinds, clip text, clamp indices, drop overlaps. Returns a list safe for spec["widgets"].
+    `texts` (the lyric lines) switches on the invented-number check for NUMBER_KINDS; the dropped card's lines fall to the auto pictures."""
+    out, used, split = [], set(), {}
     for w in widgets if isinstance(widgets, list) else []:
         if not isinstance(w, dict):
             continue
         ln = sorted({int(x) for x in (w.get("lines") or []) if isinstance(x, (int, float)) and 0 <= int(x) < n_lines})
-        if not ln or used & set(ln) or w.get("kind") not in KINDS:
+        half = w.get("half") if len(ln) == 1 and w.get("half") in (0, 1) else None  # one long line shown as two cards (half 0 and 1)
+        if not ln or w.get("kind") not in KINDS or ((used | set(split)) & set(ln) if half is None else (ln[0] in used or half in split.get(ln[0], ()))):
             continue
         o = {"lines": ln, "kind": w["kind"]}
         for k in KEYS[1:]:
@@ -109,6 +119,10 @@ def sanitize_widgets(widgets, n_lines):
                     fr = [x for x in (svg_safe.clean(m) for m in v[:8]) if x][:5]
                     if fr:
                         o[k] = fr
+            elif k == "chips":  # up to two short phrase pills on a drawn card
+                ch = [_s(c, 22) for c in v if isinstance(c, str) and c.strip()][:2] if isinstance(v, list) else []
+                if ch:
+                    o[k] = ch
             elif k == "motion":
                 if v in svg_safe.MOTIONS:
                     o[k] = v
@@ -135,9 +149,15 @@ def sanitize_widgets(widgets, n_lines):
                     pass
             else:
                 o[k] = _s(v)
+        if texts and o["kind"] in NUMBER_KINDS and not _quotes_number(o, " ".join(texts[i] for i in ln)):
+            continue
         if o["kind"] == "draw" and "svg" not in o and "frames" not in o:
             o["kind"] = "scene"  # the drawing was missing or not allowed: show a template picture instead
-        used |= set(ln)
+        if half is None:
+            used |= set(ln)
+        else:
+            split.setdefault(ln[0], set()).add(half)
+            o["half"] = half
         out.append(o)
     return out
 
@@ -158,13 +178,17 @@ def apply_result(res, analysis, spec, cfg):
         except (KeyError, TypeError, ValueError, IndexError):
             pass
     n = b - a + 1
-    wd = sanitize_widgets(res.get("widgets"), n)
+    wd = sanitize_widgets(res.get("widgets"), n, [l["text"] for l in lines[a:b + 1]])
     if not wd:
         raise ValueError("no valid widgets in the answer")
+    if wd[-1]["kind"] != "draw":  # the last picture answers the hook: a template there reads as a stock ending (the author gets a fresh attempt)
+        raise ValueError(f"the last card must be a drawing, got {wd[-1]['kind']}")
     new_spec = dict(spec, widgets=wd)
     hook = _s(res.get("hook", ""), 36).upper()
     if hook:
         new_spec["hook"] = hook
+    if res.get("mood") in ("dark", "light"):
+        new_spec["theme"] = res["mood"]
     cap = _s(res.get("caption", ""), 150)
     if cap:
         new_spec["caption"] = cap

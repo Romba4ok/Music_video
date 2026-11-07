@@ -192,7 +192,7 @@ def target(w, i, s, d, at):
     h = (f'<div style="position:absolute;inset:0;background:#15111f"></div><div id="tr{i}" style="position:absolute;inset:0;background:#ff1744;opacity:0"></div>'
          f'<svg viewBox="0 0 820 340" style="position:absolute;left:0;top:0;width:820px;height:340px">'
          f'<g id="tc{i}" style="transform-origin:410px 170px"><circle cx="410" cy="170" r="96" fill="none" stroke="#fff" stroke-width="6"/>{cross}</g>'
-         f'<g id="th{i}" style="transform-origin:410px 170px">{_heart(364, 124, 3.8)}</g></svg>'
+         f'<g id="th{i}" style="transform-origin:410px 170px"><circle cx="410" cy="170" r="30" fill="#ff1744"/><circle cx="410" cy="170" r="11" fill="#fff"/></g></svg>'  # a bullseye: the old heart read as love in every target card
          f'<div style="position:absolute;left:28px;bottom:22px;font-size:28px;font-weight:800;color:#fff;letter-spacing:1px">{lab}</div>')
     j = [f'tl.fromTo("#tc{i}",{{scale:2.4,rotation:120,opacity:0}},{{scale:1,rotation:0,opacity:1,duration:.55,ease:"power3.out"}},{_t(s + .1)});',
          f'tl.fromTo("#th{i}",{{scale:1}},{{scale:1.18,duration:.18,yoyo:true,repeat:{max(1, int(d / .36))},ease:"sine.inOut"}},{_t(s + .3)});',
