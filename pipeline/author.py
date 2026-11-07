@@ -37,7 +37,18 @@ def variety(rng=None):
             f"Рисуй узнаваемые предметы из жизни (ключ, чашка, дверь, окно, телефон), а не абстрактные фигуры и не неон. Образы необычные, без очевидных (сердце, часы, дождь).")
 
 
-def build_prompt(entry, lines, cfg):
+def song_text(all_lines, limit=2500):
+    """Plain text of the whole song for the theme (no times; neighbouring repeats dropped, clipped): the cards still follow the fragment only."""
+    out, prev = [], None
+    for l in all_lines or []:
+        t = str(l.get("text", "")).strip()
+        if t and t != prev:
+            out.append(t)
+        prev = t
+    return "\n".join(out)[:limit] or "(нет)"
+
+
+def build_prompt(entry, lines, cfg, song_lines=None):
     tpl = (ROOT / "prompts" / "widgets.md").read_text(encoding="utf-8")
     txt = "\n".join(f'{i} | {l["start"]:.1f}–{l["end"]:.1f} | {l["text"]}' for i, l in enumerate(lines))
     lo, hi = cfg["min_len"], cfg["max_len"] + cfg.get("close_overrun", 8.0)  # the fragment may run over max_len to finish its thought
@@ -48,7 +59,7 @@ def build_prompt(entry, lines, cfg):
     theme = (f"Последние ролики были {'тёмные' if rt[-1] == 'dark' else 'светлые'}: если песня позволяет, сделай этот {'светлым' if rt[-1] == 'dark' else 'тёмным'} для разнообразия."
              if len(rt) >= 2 and rt[-1] == rt[-2] else "")
     return (tpl.replace("{{ARTIST}}", entry.get("artist", "")).replace("{{TITLE}}", entry.get("title", "")).replace("{{LINES}}", txt)
-            .replace("{{AVOID}}", note).replace("{{THEME}}", theme)
+            .replace("{{AVOID}}", note).replace("{{THEME}}", theme).replace("{{SONG}}", song_text(song_lines))
             .replace("{{MIN}}", str(lo)).replace("{{MAX}}", str(hi)).replace("{{TARGET}}", f"{lo + 4}–{lo + 12}"))
 
 
@@ -187,6 +198,8 @@ def apply_result(res, analysis, spec, cfg):
     hook = _s(res.get("hook", ""), 36).upper()
     if hook:
         new_spec["hook"] = hook
+    if res.get("about"):
+        new_spec["about"] = _s(res["about"], 140)  # one sentence on what the whole fragment is about: the theme every card follows
     if res.get("mood") in ("dark", "light"):
         new_spec["theme"] = res["mood"]
     cap = _s(res.get("caption", ""), 150)
@@ -213,7 +226,7 @@ def author(entry, analysis, spec, cfg, runner=call_claude):
     err = None
     for attempt in range(1, a.get("attempts", 3) + 1):  # a bad answer / rate limit gets a fresh brief (new variety) instead of keyword cards
         try:
-            res = parse_json(runner(build_prompt(entry, lines, cfg), cfg))
+            res = parse_json(runner(build_prompt(entry, lines, cfg, analysis.get("lines")), cfg))
             an, sp, note = apply_result(res, analysis, spec, cfg)
             return an, sp, f"claude: {len(sp['widgets'])} cards, {note}" + (f", attempt {attempt}" if attempt > 1 else "")
         except subprocess.TimeoutExpired as e:  # a slow Claude will not be faster the second time

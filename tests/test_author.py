@@ -19,6 +19,14 @@ def run(res, cfg=CFG):
     return author.author(ENTRY, AN, SPEC, cfg, runner=lambda p, c: res if isinstance(res, str) else json.dumps(res))
 
 
+def test_the_prompt_carries_the_whole_song_for_the_theme():
+    lines = [{"start": 0, "end": 3, "text": "куплет про море", "words": []}] * 2
+    whole = [{"text": "куплет про море"}, {"text": "куплет про море"}, {"text": "припев про дом"}]
+    p = author.build_prompt(ENTRY, lines[:1], CFG, whole)
+    assert "припев про дом" in p and p.count("куплет про море") == 2 and "{{SONG}}" not in p  # once in the fragment list, once in the song (repeat dropped)
+    assert "{{SONG}}" not in author.build_prompt(ENTRY, lines[:1], CFG)
+
+
 def test_off_by_env_and_by_config():
     assert run(GOOD)[2] == "off"  # conftest sets VYBEX_NO_AUTHOR
 
@@ -31,6 +39,7 @@ def test_good_answer_trims_and_sanitizes(monkeypatch):
     kinds = [w["kind"] for w in sp["widgets"]]
     assert kinds == ["pair", "thermo", "draw"] and "icon" not in sp["widgets"][2] and sp["hook"] == "КТО ВИНОВАТ?" and sp["caption"].endswith("ИИ")  # the ring quotes 100 %, the lines do not: dropped
     assert sp["widgets"][1]["from"] == 36.6
+    assert run(dict(GOOD, about="про дружбу и путь с нуля", mood="dark"))[1]["about"].startswith("про дружбу") is True
 
 
 def test_a_template_as_the_last_card_is_rejected_and_retried(monkeypatch):
