@@ -100,7 +100,7 @@ def autospec(entry, n, date, recent, cfg, mode, audio_rel, trend_tags=()):
     tag = "#" + re.sub(r"\W+", "", entry["artist"].lower(), flags=re.U)
     tags = list(dict.fromkeys(list(cfg.get("default_hashtags", [])) + list(trend_tags)[:2] + ([tag] if len(tag) > 1 else [])))[:5]
     who = f' — {entry["artist"]}' if entry["artist"] else ""
-    cap = f'«{entry["title"]}»{who}. О чём эта строка? Сделано с ИИ'[:150]
+    cap = f'«{entry["title"]}»{who}. О чём эта строка?'[:150]
     spec = {"id": f"{date}-{n}", "mode": "with_audio" if mode == "auto" else "tiktok",
             "song": {"artist": entry["artist"], "title": entry["title"]}, "metaphor": metaphor, "palette": palette,
             "caption": cap, "hashtags": tags, "ai_label": True}
