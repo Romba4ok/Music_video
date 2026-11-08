@@ -572,7 +572,8 @@ def build_html(plan, spec, cfg):
                 f'<path d="M9 18V6l10-2v12" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="7" cy="18" r="3" fill="#fff"/><circle cx="17" cy="16" r="3" fill="#fff"/></svg></div>'
                 f'<div id="otx" style="position:absolute;left:0;top:585px;width:{w}px;display:flex;flex-direction:column;align-items:center;gap:12px">'
                 f'<div class="fbig" style="font-size:{fs2}px">{tt}</div><div class="isub">{html.escape(_clip(artist, 30))}</div>'
-                f'<div class="icredit" style="font-size:46px">{html.escape(credit)}</div></div></div>')
+                f'<div class="icredit" style="font-size:46px">{html.escape(credit)}</div>'
+                f'<div class="isub" style="font-size:44px;margin-top:20px;max-width:900px;text-align:center">{hook}</div></div></div>')  # the hook question again: invites a comment and loops into frame 0
             js.append(f'tl.fromTo("#oring",{{scale:.6,opacity:0}},{{scale:1,opacity:1,duration:.4,ease:"power2.out",transformOrigin:"50% 50%"}},{round(t0 + .2, 3)});')
             js.append(f'tl.to("#oring",{{rotation:150,duration:{d},ease:"none",transformOrigin:"50% 50%"}},{t0});')
             js.append(f'tl.fromTo("#oicon",{{scale:.2,rotation:-25,opacity:0}},{{scale:1,rotation:0,opacity:1,duration:.5,ease:"back.out(1.8)"}},{round(t0 + .2, 3)});')
@@ -691,7 +692,7 @@ def build_html(plan, spec, cfg):
     clips.append(
         f'<div id="clipHook" class="clip" data-start="0" data-duration="{hook_d}" data-track-index="5" style="left:60px;top:60px;width:960px;height:300px;z-index:60">'
         f'<div id="hook" class="hook" style="font-size:{hfs}px">{hook}</div></div>')
-    js.append(f'tl.fromTo("#hook",{{opacity:0,scale:1.3}},{{opacity:1,scale:1,duration:.4,ease:"back.out(1.7)",transformOrigin:"50% 50%"}},0);')
+    js.append(f'tl.fromTo("#hook",{{scale:1.3}},{{scale:1,duration:.4,ease:"back.out(1.7)",transformOrigin:"50% 50%"}},0);')  # readable on frame 0 (no fade-in)
     js.append(f'tl.to("#hook",{{opacity:0,scale:.95,duration:.25,ease:"power2.in"}},{round(hook_d - .27, 3)});')
     hook_html = clips.pop()  # the hook lives in the top black bar, outside the stage
     return f"""<!doctype html>

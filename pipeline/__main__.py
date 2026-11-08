@@ -9,7 +9,8 @@ USAGE = """stages:
   batch --mode auto|tiktok --count 3 [--date D] [--lang ru]
   buffer setup | publish out/<date>   send ready videos to the Buffer TikTok queue (docs/buffer.md)
   trends                          TikTok trends from official/permitted data
-  insights [--acc main]           views by card recipe (accounts/<acc>/cards.jsonl + views.csv)
+  ideas [--have-file f] [-o out/ideas.md]   song ideas from the YouTube music chart (needs YOUTUBE_API_KEY) -> Drive/ideas.md
+  insights [--acc main]          views by card recipe (accounts/<acc>/cards.jsonl + views.csv)
 """
 
 
@@ -56,6 +57,9 @@ def main(argv):
         from . import tiktok_trends
         print(json.dumps(tiktok_trends.fetch_trends(), ensure_ascii=False, indent=1))
         return 0
+    if cmd == "ideas":
+        from . import song_ideas
+        return song_ideas.main(rest)
     if cmd == "insights":
         from . import insights
         return insights.main(rest)

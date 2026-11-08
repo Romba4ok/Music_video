@@ -136,6 +136,22 @@ def test_own_stats_needs_token():
     assert tiktok_trends.own_stats(env={})["status"]["state"] == "needs_auth"
 
 
+# ---- song ideas
+def test_ideas_pick_cleans_titles_and_skips_owned():
+    from pipeline import song_ideas
+    items = [{"id": "a", "snippet": {"title": "Баста - Сансара (Official Video)", "channelTitle": "Basta"}, "statistics": {"viewCount": "5"}},
+             {"id": "b", "snippet": {"title": "Guf - Ice Baby [4K]", "channelTitle": "Guf"}, "statistics": {"viewCount": "9"}}]
+    r = song_ideas.pick(items, have=["Баста - Сансара"])
+    assert [x["title"] for x in r] == ["Guf - Ice Baby"] and r[0]["url"] == "https://youtu.be/b"
+
+
+def test_ideas_without_key_writes_note(tmp_path, monkeypatch):
+    from pipeline import song_ideas
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    out = tmp_path / "i.md"
+    assert song_ideas.main(["-o", str(out)]) == 0 and "YOUTUBE_API_KEY" in out.read_text(encoding="utf-8")
+
+
 # ---- chorus + fragment
 def mk_lines():
     texts = ["walking home tonight", "streetlights fade away", "nobody calls my name", "hook line alpha", "hook line beta",

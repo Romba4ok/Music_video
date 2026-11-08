@@ -97,6 +97,15 @@ jobs:
           if [ -f out/buffer-state.json ]; then python -m pipeline buffer drive-cleanup --state out/buffer-state.json | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?; fi
           if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json; fi   # saved even when something failed
           exit $rc
+      - name: "Song ideas -> Drive/ideas.md (optional: a failure here must not fail the video job)"
+        if: always()
+        continue-on-error: true
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          { rclone lsf gd:audio; rclone lsf gd:done; } > out/have.txt
+          python -m pipeline ideas --have-file out/have.txt -o out/ideas.md
+          rclone copyto out/ideas.md gd:ideas.md
       - name: Push results to Drive and mark songs done
         if: always()
         run: |
