@@ -132,6 +132,23 @@ def _draw(w, i):
     return out, True
 
 
+def snap_to_beats(scenes, beats, tol):
+    """A card that changes lands on the nearest beat when one is within `tol` seconds (the cut then feels like part of the music).
+    Order and gaps are kept: a card never moves before the previous one has lived 0.5 s or past 0.3 s before its own end."""
+    if not beats or tol <= 0:
+        return scenes
+    out = [dict(x) for x in scenes]
+    for i in range(1, len(out)):
+        s = out[i]
+        if s["role"] == "outro":
+            continue
+        b = min(beats, key=lambda x: abs(x - s["start"]))
+        if abs(b - s["start"]) <= tol and out[i - 1]["start"] + 0.5 < b < s["end"] - 0.3:
+            s["start"] = round(b, 3)
+            out[i - 1]["end"] = round(min(out[i - 1]["end"], b - 0.05), 3)
+    return out
+
+
 def resolve(plan, spec, cfg):
     """-> props dict for the Remotion `Widgets` composition (JSON-serialisable)."""
     dur = plan["duration"]
@@ -141,7 +158,7 @@ def resolve(plan, spec, cfg):
     artist, title = song.get("artist", ""), song["title"]
     handle = (cfg.get("handle") or "vybex").strip().lstrip("@")
     seed = zlib.crc32(f"{artist}{title}".encode("utf-8")) % 997  # per song: two songs do not pick the same pictures for the same kind of line
-    raw = plan["scenes"]
+    raw = snap_to_beats(plan["scenes"], plan.get("beats", []), cfg.get("beat_snap_sec", 0.18))
     n_cards = min(MAX_CARDS, sum(1 for x in raw if x["role"] != "outro")) or 1
     art_index = {a[0]: n for n, a in enumerate(ARTS)}
     used_arts, kind_count, prev, out = [], {}, "", []
@@ -187,6 +204,6 @@ def resolve(plan, spec, cfg):
     return {
         "fps": cfg["fps"], "width": cfg["width"], "height": cfg["height"], "duration": dur, "dark": dark, "alternate": bool(cfg.get("alternate_theme")),
         "pal": {"b": list(DARK_BG if dark else (b1, b2, b3)), "alt": list((b1, b2, b3) if dark else DARK_BG), "acc": acc, "ta": ta, "tb": tb, "taReadable": readable(ta)},
-        "artist": artist, "title": title, "credit": f"автор: {handle}", "hook": hook, "hookD": round(min(dur, 1.9), 3), "ostart": ost, "nCards": n_cards,
+        "artist": artist, "title": title, "credit": f"автор: {handle}", "series": str(cfg.get("series", ""))[:24], "hook": hook, "hookD": round(min(dur, 1.9), 3), "ostart": ost, "nCards": n_cards,
         "hasCap": any((x["w"] or {}).get("cap") for x in out if x["role"] != "outro"), "scenes": out,
     }

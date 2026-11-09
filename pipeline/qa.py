@@ -75,6 +75,31 @@ def black_frames(path):
     return [float(m) for m in re.findall(r"black_start:([\d.]+)", out)]
 
 
+PIC = (780, 280, 150, 740)  # w, h, x, y of the picture area inside every card (video pixels), well inside the 820x340 body
+STATIC_MAX = 0.25  # share of cards allowed to sit still; a picture that does not change for 0.5 s is "frame by frame" for the viewer
+STILL_DIFF = 3.0  # mean grey-level change (0-255) over 0.5 s below which a card picture counts as still
+
+
+def _grey(video, t):
+    w, h, x, y = PIC
+    r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1", "-vf", f"crop={w}:{h}:{x}:{y},scale=195:70,format=gray",
+                        "-f", "rawvideo", "-"], capture_output=True)
+    return r.stdout
+
+
+def motion_levels(video, cards):
+    """Mean grey-level change of each card's picture between two frames 0.5 s apart (one second into the card). None = card too short to tell."""
+    out = []
+    for c in cards:
+        t = c["start"] + min(1.0, max(0.3, c["end"] - c["start"] - 0.7))  # one second in, earlier on a short card
+        if c["end"] - t < 0.6:
+            out.append(None)
+            continue
+        a, b = _grey(video, t), _grey(video, t + 0.5)
+        out.append(sum(abs(x - y) for x, y in zip(a, b)) / max(1, min(len(a), len(b))) if a and b else None)
+    return out
+
+
 def run_checks(spec, video, plan, cfg):
     res = []
     add = lambda ok, name, d="": res.append(("PASS" if ok else "FAIL", name, d))
@@ -122,4 +147,10 @@ def run_checks(spec, video, plan, cfg):
         add(not short, "cards_readable", f"too short: {short[:5]}" if short else "")
     else:
         skip("lyrics_confidence", "no lyrics (commentary)")
+    if cards:
+        lv = motion_levels(video, cards)
+        known = [x for x in lv if x is not None]
+        still = [i for i, x in enumerate(lv) if x is not None and x < STILL_DIFF]
+        add(not known or len(still) <= STATIC_MAX * len(known), "cards_move",
+            f"{len(still)}/{len(known)} card pictures nearly still (cards {still[:6]}); levels {[None if x is None else round(x, 1) for x in lv]}")
     return res

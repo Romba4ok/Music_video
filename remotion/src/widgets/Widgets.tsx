@@ -18,6 +18,10 @@ const GLYPH: Record<string, string> = {
   bubble: "M4 5h16v11H9l-5 4z", heart: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z",
   pin: "M12 2a7 7 0 0 0-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z", lines: "M5 6h14M5 12h14M5 18h9", bell: "M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0z",
 };
+// a "pop" every 1.1 s of the card's life: popAge = seconds since the last one (-1 before the first), pop = its size 0..1
+const PERIOD = 1.1;
+const popAge = (u: number, from: number) => (u < from ? -1 : (u - from) % PERIOD);
+const pop = (u: number, from: number) => { const k = popAge(u, from); return k < 0 || k > 0.3 ? 0 : Math.sin((Math.PI * k) / 0.3); };
 const rnd = (i: number, k = 0) => { const x = Math.sin(i * 127.1 + k * 311.7) * 43758.5453; return x - Math.floor(x); };
 const ri = (i: number, k: number, a: number, b: number) => a + rnd(i, k) * (b - a);
 
@@ -28,9 +32,8 @@ const Cross: React.FC<{ x: number; y: number; s: number; col: string; o: number;
   <svg viewBox="0 0 10 10" style={{ position: "absolute", left: x, top: y, width: s, height: s, opacity: o, transform: `rotate(${rot}deg)` }}><path d="M5 1v8M1 5h8" stroke={col} strokeWidth={2} strokeLinecap="round" /></svg>
 );
 
-export const Widgets: React.FC<WidgetsProps> = (p) => {
-  const frame = useCurrentFrame();
-  const t = frame / p.fps;
+const Frame: React.FC<WidgetsProps & { t: number }> = (p) => {
+  const t = p.t;
   const W = p.width, SQ = W, OY = (p.height - SQ) / 2;
   const { ta, tb, acc } = p.pal;
   const lyric = p.scenes.filter((s) => s.role !== "outro");
@@ -69,10 +72,10 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
   // ---------- one card ----------
   const card = (s: Scene, idx: number) => {
     const beforeOutro = idx + 1 < p.scenes.length && p.scenes[idx + 1].role === "outro";
-    const u = t - s.start, d = s.end - s.start;
+    const first = idx === 0, u = t - s.start + (first ? 0.9 : 0), d = s.end - s.start;
     const life = Math.min(d + 0.6, dur - s.start);
-    if (u < 0 || u > life || d <= 0) return null;
-    const e = pr(t, s.start, 0.6, "power3.out");
+    if (t < s.start || u > life + (first ? 0.9 : 0) || d <= 0) return null;
+    const e = first ? 1 : pr(t, s.start, 0.6, "power3.out");
     let op = 1, sc = 0.92 + 0.08 * e, y = 150 * (1 - e), x = -40 * (1 - e), rot = -5 * (1 - e), rx = -12 * (1 - e), blur = 10 * (1 - e);
     if (beforeOutro) {
       const te = Math.max(s.end - 0.35, s.start + 0.5), k = pr(t, te, 0.35, "power3.in");
@@ -86,7 +89,7 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
     let cur = 0, sg = idx % 2 === 0 ? 1 : -1, tgt = 0, from = 0;
     if (t >= s.start + 0.6) {
       const n = Math.floor((t - s.start - 0.6) / 2.6);
-      for (let k = 0; k <= n; k++) { from = cur; tgt = sg * (3 + (k % 3)); if (k < n) cur = tgt; sg = -sg; }
+      for (let k = 0; k <= n; k++) { from = cur; tgt = sg * (4 + (k % 3)); if (k < n) cur = tgt; sg = -sg; }
       cur = from + (tgt - from) * pr(t, s.start + 0.6 + n * 2.6, 2.6, "sine.inOut");
     }
     const sweepT = (() => { for (let ts = s.start + 0.7; ts < s.end - 0.3; ts += 2.2) if (t >= ts && t <= ts + 0.9) return t - ts; return -1; })();
@@ -107,9 +110,12 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
                 {s.cat && <em style={{ fontStyle: "normal", fontSize: 22, fontWeight: 700, color: "#7a5cff" }}>{s.cat.slice(0, 22)}</em>}
               </div>
             </div>
-            <div style={{ position: "relative", width: 820, height: 340, marginTop: 14, borderRadius: 36, overflow: "hidden", transform: `translateY(${5 * yoyo(t, s.start + 0.5, 1.1)}px)` }}>
+            <div style={{ position: "relative", width: 820, height: 340, marginTop: 14, borderRadius: 36, overflow: "hidden",
+              transform: `translateY(${6 * yoyo(t, s.start + 0.5, 1.1)}px) rotate(${0.9 * Math.sin(u * 1.7 + s.i)}deg) scale(${1 + 0.045 * pr(u, 0, d, "none") + pop(u, 0.6) * 0.04})` }}>
               <Body kind={s.kind} w={s.w} i={s.i} u={u} d={d} text={text} ta={ta} tb={tb} acc={acc} taReadable={p.pal.taReadable} />
             </div>
+            {Array.from({ length: 6 }, (_, q) => { const k = popAge(u, 0.6); if (k < 0 || k > 0.5) return null; const a = (q / 6) * 6.283 + s.i; const r = 330 + 160 * (k / 0.5);
+              return <Cross key={`p${q}`} x={410 + Math.cos(a) * r * 1.05} y={250 + Math.sin(a) * r * 0.45} s={26} col={COLS[(q + s.i) % 5]} o={1 - k / 0.5} rot={q * 40 + 160 * k} />; })}
             {hasCap && <div style={{ height: CAP_H - 14, marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 42, fontWeight: 800, color: INK, whiteSpace: "nowrap", opacity: pr(u, 0.55, 0.4, "power2.out"), transform: `translateY(${12 * (1 - pr(u, 0.55, 0.4, "power2.out"))}px)` }}>{cap}</div>}
           </div>
           <div style={{ position: "absolute", left: 0, top: cardH + 16, width: 900, display: "flex", justifyContent: "center", gap: 14 }}>
@@ -152,6 +158,7 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
         <div style={{ position: "absolute", left: 430, top: 330, width: 220, height: 220, borderRadius: 54, background: `linear-gradient(135deg,${ta},${tb})`, boxShadow: "0 20px 50px rgba(90,70,160,.3)", display: "flex", alignItems: "center", justifyContent: "center",
           opacity: pr(t, t0 + 0.2, 0.5, "power1.out"), transform: `translateY(${t > t0 + 0.75 ? -10 * yoyo(t, t0 + 0.75, 0.8) : 0}px) scale(${0.2 + 0.8 * ep}) rotate(${-25 * (1 - ep)}deg)` }}><Note size={120} /></div>
         <div style={{ position: "absolute", left: 0, top: 585, width: W, display: "flex", flexDirection: "column", alignItems: "center", gap: 12, opacity: tp, transform: `translateY(${24 * (1 - tp)}px) scale(${1 + 0.04 * (t > t0 + 0.9 ? yoyo(t, t0 + 0.9, 0.9) : 0)})` }}>
+          {p.series && <div style={{ textAlign: "center", fontWeight: 700, fontSize: 34, letterSpacing: 4, color: TX2, textTransform: "uppercase" }}>{p.series}</div>}
           <div style={{ textAlign: "center", fontWeight: 900, lineHeight: 1.05, letterSpacing: -1, color: TXF, textShadow: TXS, fontSize: fs2 }}>{p.title.slice(0, 24).toUpperCase()}</div>
           <div style={{ textAlign: "center", fontWeight: 700, fontSize: 40, color: TX2 }}>{p.artist.slice(0, 30)}</div>
           <div style={{ textAlign: "center", fontWeight: 900, fontSize: 46, color: TX }}>{p.credit}</div>
@@ -166,7 +173,7 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
   // ---------- hook ----------
   const hfs = p.hook.length <= 14 ? 124 : p.hook.length <= 24 ? 100 : 80;
   const hookOp = 1 - pr(t, p.hookD - 0.27, 0.25, "power2.in");
-  const hookSc = 1.3 - 0.3 * pr(t, 0, 0.4, "back.out(1.7)");
+  const hookSc = 1.12 - 0.12 * pr(t, 0, 0.4, "back.out(1.7)");
 
   return (
     <AbsoluteFill style={{ background: "#000", fontFamily, ["--ta" as any]: ta, ["--tb" as any]: tb }}>
@@ -225,8 +232,24 @@ export const Widgets: React.FC<WidgetsProps> = (p) => {
         {orbOut}
         {outro}
       </div>
-      <div style={{ position: "absolute", left: 60, top: 60, width: 960, height: 300, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", color: "#fff", fontWeight: 900, lineHeight: 1.08, overflowWrap: "anywhere", fontSize: hfs,
-        textShadow: "0 0 18px #ff3d9a,0 0 46px #ff3d9a", opacity: t < p.hookD ? hookOp : 0, transform: `scale(${hookSc})` }}>{p.hook}</div>
+      <div style={{ position: "absolute", left: 60, top: 60, width: 960, height: 300, zIndex: 60, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", color: "#fff", fontWeight: 900, lineHeight: 1.08, overflowWrap: "anywhere",
+        opacity: t < p.hookD ? hookOp : 0, transform: `scale(${hookSc})` }}>
+        <div style={{ fontSize: hfs, textShadow: "0 0 18px #ff3d9a,0 0 46px #ff3d9a" }}>{p.hook}</div>
+        {p.series && <div style={{ marginTop: 18, fontSize: 34, fontWeight: 700, letterSpacing: 4, color: "#ff9ec4", textTransform: "uppercase" }}>{p.series}</div>}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const LOOP_S = 0.5; // the last half second dissolves into the first frame, so a replay does not jump
+
+export const Widgets: React.FC<WidgetsProps> = (p) => {
+  const t = useCurrentFrame() / p.fps;
+  const k = pr(t, p.duration - LOOP_S, LOOP_S, "power1.inOut");
+  return (
+    <AbsoluteFill style={{ background: "#000" }}>
+      <Frame {...p} t={t} />
+      {k > 0 && <AbsoluteFill style={{ opacity: k }}><Frame {...p} t={0} /></AbsoluteFill>}
     </AbsoluteFill>
   );
 };

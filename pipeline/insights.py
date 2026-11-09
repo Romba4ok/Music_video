@@ -25,7 +25,10 @@ def table(cards, views):
     """-> [(feature, group, n, median views)] over videos that have both a card record and a view count."""
     rows = [dict(c, views=views[c["song"].lower()]) for c in cards if c["song"].lower() in views]
     feats = {"theme": lambda r: r.get("theme", "light"), "draw share": lambda r: "2/3+" if r.get("draw_share", 0) >= .66 else "less",
-             "app details (big/chips)": lambda r: "3+" if r.get("details", 0) >= 3 else "fewer", "cards": lambda r: "9+" if r.get("n_cards", 0) >= 9 else "fewer"}
+             "app details (big/chips)": lambda r: "3+" if r.get("details", 0) >= 3 else "fewer", "cards": lambda r: "9+" if r.get("n_cards", 0) >= 9 else "fewer",
+             "renderer": lambda r: r.get("renderer", "hyperframes"),  # old rows have no field: made before the Remotion move (frame-by-frame cards)
+             "objects move (tw)": lambda r: "half+" if r.get("anim_share", 0) >= .5 else "less",
+             "hook is a question": lambda r: "yes" if r.get("hook_question", str(r.get("hook", "")).endswith("?")) else "no"}
     out = []
     for name, key in feats.items():
         groups = {}

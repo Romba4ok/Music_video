@@ -43,6 +43,14 @@
 | `dots` | «один из миллиардов», толпа и «я» | `from`, `to`, `chosen`, `label` |
 | `camera` | «смотри на меня», взгляд, фокус | `focus`, `bubble`, `zoom` |
 | `scene` | атмосфера (картинка `art`) | `art`, `big`, `emblem`, `pill` |
+| `weather` | смешанные чувства, «и свет, и дождь» | `label` |
+| `typing` | ждёшь ответа, нет в сети | `who`, `status`, `err` |
+| `bloom` | начало, надежда, рост | `label` |
+| `duo` | двое рядом (если тема про близость) | `label` |
+| `breath` | вдох-выдох, волнение (3D-шар) | `label` |
+| `deep` | тонуть, погружаться | `label` |
+| `unlock` | открыться, без секретов | `label` |
+| `night` | ночь, сны, мечты | `label` |
 | `draw` | своя картинка по смыслу | `svg` + `tw` (анимация объектов, см. `docs/claude-author.md`), либо старое `frames`; `big`, `chips` |
 
 `art` (картинки): sunset, map, pulse, clock, rain, moon, eye, city, coins.

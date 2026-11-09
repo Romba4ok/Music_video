@@ -1,6 +1,7 @@
 import React, { useLayoutEffect, useRef } from "react";
 import { applyTweens, fmtNum, ft, pr, yoyo } from "./anim";
 import { ART_UID, ARTS, CAMERA_ART } from "../arts.generated";
+import { SCENES } from "./Scenes";
 import type { Widget } from "./types";
 
 const INK = "#14141f";
@@ -80,11 +81,11 @@ const Counter: React.FC<B> = ({ w, i, u, d }) => {
           <small style={{ fontSize: 30, fontWeight: 800, color: "#8a6bff", marginLeft: 8 }}>{clip(w.unit, 6)}</small>
         </div>
         <div style={{ height: 14, borderRadius: 7, background: "rgba(20,20,31,.1)", overflow: "hidden" }}>
-          <div style={{ height: 14, borderRadius: 7, width: `${ft(u, 0, d * 0.7, 0, Math.trunc(num(w.fill, 1) * 100), "power2.out")}%`, background: "linear-gradient(90deg,var(--ta),var(--tb))" }} />
+          <div style={{ height: 14, borderRadius: 7, width: `${ft(u, 0, d * 0.7, 0, Math.trunc(num(w.fill, 1) * 100), "power2.out")}%`, filter: `brightness(${1 + 0.12 * Math.sin(u * 5)})`, background: "linear-gradient(90deg,var(--ta),var(--tb))" }} />
         </div>
         {w.button && (
           <div style={{ alignSelf: "flex-start", marginTop: 12, padding: "14px 28px", borderRadius: 30, background: "#ff4f3d", color: "#fff", fontSize: 30, fontWeight: 800, whiteSpace: "nowrap",
-            opacity: pr(u, at(0.55), 0.3), transform: `scale(${0.7 + 0.3 * pr(u, at(0.55), 0.3, "back.out(2)")})`, transformOrigin: "0% 50%" }}>{clip(w.button, 20)}</div>
+            opacity: pr(u, at(0.55), 0.3), transform: `scale(${(0.7 + 0.3 * pr(u, at(0.55), 0.3, "back.out(2)")) * (1 + 0.04 * Math.sin(u * 6))})`, transformOrigin: "0% 50%" }}>{clip(w.button, 20)}</div>
         )}
       </div>
     </div>
@@ -99,11 +100,11 @@ const Search: React.FC<B> = ({ w, u, d, text, acc, taReadable }) => {
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 16, height: 90, border: `4px solid ${acc}`, borderRadius: 45, padding: "0 30px", fontSize: 40, fontWeight: 700, color: INK, boxSizing: "border-box" }}>
-        <span style={{ width: 26, height: 26, border: "5px solid #9a8fb5", borderRadius: "50%", flex: "none", boxSizing: "border-box" }} />
+        <span style={{ width: 26, height: 26, border: "5px solid #9a8fb5", borderRadius: "50%", flex: "none", boxSizing: "border-box", transform: `translate(${2 * Math.sin(u * 6)}px, ${2 * Math.cos(u * 6)}px)` }} />
         <span>{q.slice(0, n)}</span>
         <i style={{ width: 3, height: 44, background: acc, display: "block", opacity: Math.floor(u * 2) % 2 ? 0 : 1 }} />
       </div>
-      <div style={{ marginTop: 44, textAlign: "center", fontSize: 96, fontWeight: 900, lineHeight: 1, color: taReadable, opacity: pr(u, at(0.62), 0.35), transform: `scale(${0.8 + 0.2 * rb})` }}>{clip(w.result ?? "0 результатов", 18)}</div>
+      <div style={{ marginTop: 44, textAlign: "center", fontSize: 96, fontWeight: 900, lineHeight: 1, color: taReadable, opacity: pr(u, at(0.62), 0.35), transform: `scale(${(0.8 + 0.2 * rb) * (1 + 0.03 * Math.sin(u * 5) * rb)})` }}>{clip(w.result ?? "0 результатов", 18)}</div>
       <div style={{ marginTop: 16, textAlign: "center", fontSize: 36, fontWeight: 700, color: GREY, opacity: pr(u, at(0.7), 0.3, "power1.out"), transform: `translateY(${14 * (1 - pr(u, at(0.7), 0.3, "power1.out"))}px)` }}>{clip(w.sub, 34)}</div>
     </>
   );
@@ -162,6 +163,11 @@ const Chat: React.FC<B> = ({ w, u, d, text }) => {
             opacity: pr(u, at(0.1 + k * 0.28), 0.3, "power1.out"), transform: `translateY(${30 * (1 - p)}px) scale(${0.85 + 0.15 * p})`, transformOrigin: `${me ? "100%" : "0%"} 100%` }}>{clip(m.text, 46)}</div>
         );
       })}
+      {msgs.length < 3 && u > at(0.1 + msgs.length * 0.28) + 0.4 && (
+        <div style={{ alignSelf: msgs[msgs.length - 1]?.from === "me" ? "flex-start" : "flex-end", padding: "20px 30px", borderRadius: 34, background: "#eceaf6", display: "flex", gap: 8 }}>
+          {[0, 1, 2].map((k) => <i key={k} style={{ width: 14, height: 14, borderRadius: 7, background: "#9a96b8", display: "block", transform: `translateY(${-6 * Math.max(0, Math.sin(u * 8 - k))}px)` }} />)}
+        </div>
+      )}
     </div>
   );
 };
@@ -177,10 +183,10 @@ const Dots: React.FC<B> = ({ w, i, u, d }) => {
       <svg viewBox="0 0 800 210" style={{ width: W, height: 176, display: "block" }}>
         {Array.from({ length: 144 }, (_, k) => {
           const r = Math.floor(k / 24), c = k % 24;
-          return <circle key={k} cx={20 + c * 33} cy={20 + r * 33} r={7} fill="#b9b4d6" opacity={1 - pr(u, 0.25 + ((rank.get(k) ?? 0) / 144) * d * 0.5, 0.25, "power1.out")} />;
+          return <circle key={k} cx={20 + c * 33} cy={20 + r * 33} r={7} fill="#b9b4d6" opacity={(1 - pr(u, 0.25 + ((rank.get(k) ?? 0) / 144) * d * 0.5, 0.25, "power1.out")) * (0.8 + 0.2 * Math.sin(u * 3 + k))} />;
         })}
       </svg>
-      <div style={{ position: "absolute", left: 350, top: 28, width: 120, height: 120, borderRadius: 60, background: "#ff6b9d", color: INK, fontSize: 36, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", opacity: ch, transform: `scale(${0.3 + 0.7 * ch})` }}>{clip(w.chosen ?? "Она", 8)}</div>
+      <div style={{ position: "absolute", left: 350, top: 28, width: 120, height: 120, borderRadius: 60, background: "#ff6b9d", color: INK, fontSize: 36, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", opacity: ch, transform: `scale(${(0.3 + 0.7 * ch) * (1 + 0.07 * Math.sin(u * 5) * ch)})` }}>{clip(w.chosen ?? "Она", 8)}</div>
       <div style={{ textAlign: "center", fontSize: 28, fontWeight: 700, color: GREY, marginTop: 2 }}>{clip(w.label, 30)}</div>
       <div style={{ textAlign: "center", fontSize: 72, fontWeight: 900, color: INK, lineHeight: 1.05 }}>{fmtNum(ft(u, 0.2, d * 0.6, a, b, "power3.out"))}</div>
       <div style={{ textAlign: "center", fontSize: 28, fontWeight: 700, color: GREY }}>{clip(w.sub, 30)}</div>
@@ -275,7 +281,7 @@ const Pair: React.FC<B> = ({ w, i, u, d }) => {
   const at = (f: number) => Math.min(f * d, Math.max(d - 0.35, 0.1));
   const a = clip(w.a ?? "Я", 5), b = clip(w.b ?? "Ты", 5);
   const pa = pr(u, at(0.1), 0.35, "back.out(2)"), pb = pr(u, at(0.7), 0.35, "back.out(2)");
-  const hx = ft(u, at(0.3), d * 0.38, 0, 240, "power1.inOut"), ho = pr(u, at(0.3), 0.001);
+  const cyc = u < at(0.3) ? 0 : ((u - at(0.3)) / 1.4) % 1, hx = 240 * pr(cyc, 0, 1, "power1.inOut"), ho = u < at(0.3) ? 0 : 1 - pr(cyc, 0.88, 0.12), br = 0.04 * Math.sin(u * 4);
   return (
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
@@ -284,9 +290,9 @@ const Pair: React.FC<B> = ({ w, i, u, d }) => {
           <radialGradient id={`pb${i}`}><stop offset="0" stopColor="#ffa6c4" /><stop offset="1" stopColor="#ff4f8b" /></radialGradient>
         </defs>
         <path d="M262 150H558" stroke="#8a6bff" strokeWidth={6} strokeDasharray="2 16" strokeLinecap="round" fill="none" />
-        <g style={{ transformOrigin: "150px 150px", opacity: 0.4 + 0.6 * pa, transform: `scale(${0.88 + 0.17 * pa})` }}><circle cx={150} cy={150} r={100} fill={`url(#pa${i})`} /><text x={150} y={176} textAnchor="middle" fontSize={76} fontWeight={900} fill={INK}>{a}</text></g>
+        <g style={{ transformOrigin: "150px 150px", opacity: 0.4 + 0.6 * pa, transform: `scale(${0.88 + 0.17 * pa + br})` }}><circle cx={150} cy={150} r={100} fill={`url(#pa${i})`} /><text x={150} y={176} textAnchor="middle" fontSize={76} fontWeight={900} fill={INK}>{a}</text></g>
         <g style={{ transformOrigin: "670px 670px" }} />
-        <g style={{ transformOrigin: "670px 150px", opacity: 0.4 + 0.6 * pb, transform: `scale(${0.88 + 0.17 * pb})` }}><circle cx={670} cy={150} r={100} fill={`url(#pb${i})`} /><text x={670} y={176} textAnchor="middle" fontSize={76} fontWeight={900} fill={INK}>{b}</text></g>
+        <g style={{ transformOrigin: "670px 150px", opacity: 0.4 + 0.6 * pb, transform: `scale(${0.88 + 0.17 * pb - br})` }}><circle cx={670} cy={150} r={100} fill={`url(#pb${i})`} /><text x={670} y={176} textAnchor="middle" fontSize={76} fontWeight={900} fill={INK}>{b}</text></g>
         <g opacity={ho} style={{ transform: `translateX(${hx}px)` }}>{heart(264, 124, 2.2)}</g>
       </svg>
       <Cap label={w.label} />
@@ -301,6 +307,7 @@ const Pulse: React.FC<B> = ({ w, i, u, d }) => {
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
         <path d={ecg} pathLength={1} stroke="#ff4f6d" strokeWidth={9} fill="none" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="1" strokeDashoffset={ft(u, 0.05, d * 0.6, 1, 0)} />
+        <path d={ecg} pathLength={1} stroke="#fff" strokeWidth={9} fill="none" strokeLinecap="round" strokeDasharray="0.1 1" strokeDashoffset={-((u * 0.8) % 1) + 0.1} opacity={0.85 * pr(u, d * 0.6, 0.3)} />
         <g style={{ transformOrigin: "190px 110px", transform: `scale(${1 + 0.16 * yoyo(u, 0, 0.2)})` }}>{heart(106, 26, 7)}</g>
       </svg>
       <div style={{ position: "absolute", left: 420, top: 26, fontSize: 140, fontWeight: 900, lineHeight: 1, color: INK }}>{Math.round(ft(u, 0, d * 0.85, Math.trunc(a), Math.trunc(b), "power2.out"))}</div>
@@ -313,6 +320,13 @@ const Pulse: React.FC<B> = ({ w, i, u, d }) => {
 
 const Route: React.FC<B> = ({ w, i, u, d }) => {
   const at = (f: number) => Math.min(f * d, Math.max(d - 0.35, 0.1));
+  const path = useRef<SVGPathElement>(null), dot = useRef<SVGCircleElement>(null);
+  useLayoutEffect(() => { // a car keeps driving the finished route, there and again
+    const p = path.current, c = dot.current;
+    if (!p || !c) return;
+    const k = u < at(0.62) ? 0 : ((u - at(0.62)) * 0.45) % 1, pt = p.getPointAtLength(p.getTotalLength() * k);
+    c.setAttribute("cx", String(pt.x)); c.setAttribute("cy", String(pt.y)); c.style.opacity = u < at(0.62) ? "0" : "1";
+  });
   const A = clip(w.from ?? "Старт", 12), Bn = clip(w.to ?? "Цель", 12);
   const wa = 34 + 17 * A.length, wb = 34 + 17 * Bn.length;
   const pin = (x: number, y: number, col: string, p: number) => (
@@ -327,7 +341,8 @@ const Route: React.FC<B> = ({ w, i, u, d }) => {
         <rect width={820} height={340} fill="#e8eefc" /><path d="M0 225C200 180 400 265 820 190" stroke="#bcd4f5" strokeWidth={46} fill="none" />
         <rect x={470} y={232} width={150} height={80} rx={22} fill="#cdecd0" />
         {["M0 96H820", "M0 312H820", "M205 0V340", "M565 0V340"].map((p) => <path key={p} d={p} stroke="#fff" strokeWidth={10} />)}
-        <path d="M130 252C250 252 300 130 440 150S600 122 660 112" pathLength={1} stroke="#3b82f6" strokeWidth={13} fill="none" strokeLinecap="round" strokeDasharray="1" strokeDashoffset={ft(u, at(0.12), d * 0.5, 1, 0, "power1.inOut")} />
+        <path ref={path} d="M130 252C250 252 300 130 440 150S600 122 660 112" pathLength={1} stroke="#3b82f6" strokeWidth={13} fill="none" strokeLinecap="round" strokeDasharray="1" strokeDashoffset={ft(u, at(0.12), d * 0.5, 1, 0, "power1.inOut")} />
+        <circle ref={dot} r={13} fill="#fff" stroke="#3b82f6" strokeWidth={6} />
         {pin(130, 252, "#ff4f6d", pr(u, 0.05, 0.45, "bounce.out"))}{lab(130, 128, wa, A, pr(u, 0.2, 0.3, "power1.out"))}
         {pin(660, 112, "#ff8a2d", pr(u, at(0.62), 0.45, "bounce.out"))}{lab(660, 128, wb, Bn, pr(u, at(0.7), 0.3, "power1.out"))}
       </svg>
@@ -344,9 +359,9 @@ const Venn: React.FC<B> = ({ w, u, d }) => {
   return (
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
-        <g style={{ transform: `translateX(${ft(u, 0.15, d * 0.5, 0, sh, "power2.inOut")}px)` }}><circle cx={230} cy={170} r={120} fill="#ff9a6b" opacity={0.92} /></g>
-        <g style={{ transform: `translateX(${ft(u, 0.15, d * 0.5, 0, -sh, "power2.inOut")}px)` }}><circle cx={590} cy={170} r={120} fill="#ff4f8b" opacity={0.82} /></g>
-        <g style={{ transformOrigin: "410px 170px", opacity: hp, transform: `scale(${0.3 + 0.7 * hp})` }}>{heart(366, 126, 3.7, "#fff")}</g>
+        <g style={{ transform: `translateX(${ft(u, 0.15, d * 0.5, 0, sh, "power2.inOut") + 12 * Math.sin(u * 2.2)}px)` }}><circle cx={230} cy={170} r={120} fill="#ff9a6b" opacity={0.92} /></g>
+        <g style={{ transform: `translateX(${ft(u, 0.15, d * 0.5, 0, -sh, "power2.inOut") - 12 * Math.sin(u * 2.2)}px)` }}><circle cx={590} cy={170} r={120} fill="#ff4f8b" opacity={0.82} /></g>
+        <g style={{ transformOrigin: "410px 170px", opacity: hp, transform: `scale(${(0.3 + 0.7 * hp) * (1 + 0.08 * Math.sin(u * 6) * hp)})` }}>{heart(366, 126, 3.7, "#fff")}</g>
       </svg>
       <div style={{ position: "absolute", right: 24, top: 10, fontSize: 64, fontWeight: 900, color: "#ff4f6d", lineHeight: 1 }}>×{Math.round(k)}</div>
       <Cap label={w.label} />
@@ -360,7 +375,7 @@ const Ring: React.FC<B> = ({ w, u, d }) => {
   return (
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
-        <g transform="rotate(-90 410 150)">
+        <g transform="rotate(-90 410 150)" style={{ transformOrigin: "410px 150px", transform: `rotate(-90deg) scale(${1 + 0.035 * Math.sin(u * 4)})` }}>
           <circle cx={410} cy={150} r={115} pathLength={100} fill="none" stroke="#f1e6d6" strokeWidth={30} />
           <circle cx={410} cy={150} r={115} pathLength={100} fill="none" stroke="#ff9f1a" strokeWidth={30} strokeLinecap="round" strokeDasharray="100" strokeDashoffset={100 - v} />
         </g>
@@ -376,9 +391,9 @@ const Thermo: React.FC<B> = ({ w, u, d }) => {
   return (
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
-        <rect x={212} y={18} width={58} height={236} rx={29} fill="#ece6f7" /><circle cx={241} cy={272} r={44} fill="#ff4f6d" />
-        <rect x={223} y={52} width={36} height={220} rx={18} fill="#ff4f6d" style={{ transformOrigin: "241px 270px", transform: `scaleY(${ft(u, 0.1, d * 0.7, 0.25, 1, "power2.out")})` }} />
-        {[0, 1, 2, 3].map((k) => <path key={k} d={`M${440 + k * 52} 270v22M${429 + k * 52} 281h22`} stroke="#4a8bff" strokeWidth={5} strokeLinecap="round" />)}
+        <rect x={212} y={18} width={58} height={236} rx={29} fill="#ece6f7" /><circle cx={241} cy={272} r={44 + 3 * Math.sin(u * 6)} fill="#ff4f6d" />
+        <rect x={223} y={52} width={36} height={220} rx={18} fill="#ff4f6d" style={{ transformOrigin: "241px 270px", transform: `scaleY(${ft(u, 0.1, d * 0.7, 0.25, 1, "power2.out") * (1 + 0.012 * Math.sin(u * 9))})` }} />
+        {[0, 1, 2, 3].map((k) => <path key={k} d={`M${440 + k * 52} 270v22M${429 + k * 52} 281h22`} stroke="#4a8bff" strokeWidth={5} strokeLinecap="round" transform={`translate(0 ${-8 * Math.abs(Math.sin(u * 2.4 + k))})`} />)}
       </svg>
       <div style={{ position: "absolute", left: 330, top: 70, fontSize: 132, fontWeight: 900, lineHeight: 1, color: INK }}>
         <span>{ft(u, 0.1, d * 0.7, a, b, "power2.out").toFixed(1)}</span><small style={{ fontSize: 60, color: "#ff4f6d" }}>{clip(w.unit ?? "°", 3)}</small>
@@ -415,9 +430,9 @@ const Target: React.FC<B> = ({ w, u, d }) => {
   const p = pr(u, 0.1, 0.55, "power3.out");
   return (
     <div style={wrap}>
-      <div style={{ ...abs, background: "#15111f" }} /><div style={{ ...abs, background: "#ff1744", opacity: 0.4 * pr(u, at(0.6), 0.4) }} />
+      <div style={{ ...abs, background: "#15111f" }} /><div style={{ ...abs, background: "#ff1744", opacity: 0.4 * pr(u, at(0.6), 0.4) + 0.25 * Math.max(0, Math.sin(u * 5)) * p }} />
       <svg viewBox="0 0 820 340" style={abs}>
-        <g style={{ transformOrigin: "410px 170px", opacity: p, transform: `scale(${2.4 - 1.4 * p}) rotate(${120 * (1 - p)}deg)` }}>
+        <g style={{ transformOrigin: "410px 170px", opacity: p, transform: `scale(${2.4 - 1.4 * p}) rotate(${120 * (1 - p) + u * 25 * p}deg)` }}>
           <circle cx={410} cy={170} r={96} fill="none" stroke="#fff" strokeWidth={6} />
           {["M410 36V104", "M410 236V304", "M276 170H344", "M476 170H544"].map((q) => <path key={q} d={q} stroke="#fff" strokeWidth={6} strokeLinecap="round" />)}
         </g>
@@ -434,7 +449,7 @@ const Polaroid: React.FC<B> = ({ w, u, d }) => {
   return (
     <div style={wrap}>
       <svg viewBox="0 0 820 340" style={abs}>
-        <g style={{ transformOrigin: "165px 170px", opacity: pr(u, 0.05, 0.5, "power1.out"), transform: `rotate(${-14 + 9 * p}deg) scale(${0.8 + 0.2 * p})` }}>
+        <g style={{ transformOrigin: "165px 170px", opacity: pr(u, 0.05, 0.5, "power1.out"), transform: `rotate(${-14 + 9 * p + 4 * Math.sin(u * 2.2) * p}deg) scale(${0.8 + 0.2 * p})` }}>
           <rect x={40} y={16} width={250} height={308} rx={16} fill="#fff" stroke="#e6e1f5" strokeWidth={3} />
           <rect x={58} y={34} width={214} height={226} rx={9} fill="#2b2b4a" /><circle cx={165} cy={124} r={40} fill="#8c8cb8" /><path d="M92 260Q165 160 238 260Z" fill="#8c8cb8" />
         </g>
@@ -445,7 +460,7 @@ const Polaroid: React.FC<B> = ({ w, u, d }) => {
   );
 };
 
-const KINDS: Record<string, React.FC<B>> = { counter: Counter, search: Search, camera: Camera, chat: Chat, dots: Dots, draw: Draw, versus: Versus, scene: Scene, pair: Pair, pulse: Pulse, route: Route, venn: Venn, ring: Ring, thermo: Thermo, alert: Alert, target: Target, polaroid: Polaroid };
+const KINDS: Record<string, React.FC<B>> = { counter: Counter, search: Search, camera: Camera, chat: Chat, dots: Dots, draw: Draw, versus: Versus, scene: Scene, pair: Pair, pulse: Pulse, route: Route, venn: Venn, ring: Ring, thermo: Thermo, alert: Alert, target: Target, polaroid: Polaroid, ...SCENES };
 
 export const Body: React.FC<B & { kind: string }> = ({ kind, ...p }) => {
   const K = KINDS[kind] ?? Scene;

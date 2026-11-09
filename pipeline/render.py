@@ -41,6 +41,13 @@ def check_props(props):
     return errs
 
 
+def review_files(video, dur, wd):
+    """cover.png (a frame about a second in: hook on screen, the first card already drawn) and sheet.png (8 evenly spaced frames) for a quick look."""
+    _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "1.0", "-i", str(video), "-frames:v", "1", str(wd / "cover.png")])
+    pick = "+".join(f"eq(n,{int(dur * 30 * k / 8)})" for k in range(8))
+    _run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf", f"select='{pick}',crop=1080:1080:0:420,scale=270:-1,tile=8x1", "-frames:v", "1", "-an", str(wd / "sheet.png")])
+
+
 def render(spec, plan, workdir, cfg, audio_src=None):
     """plan = script_gen.build_scenes output (or commentary equivalent). Returns path to final mp4."""
     wd = Path(workdir).resolve()  # absolute: Remotion runs with cwd=remotion/
@@ -65,4 +72,5 @@ def render(spec, plan, workdir, cfg, audio_src=None):
             raise RuntimeError("ffmpeg mux failed: " + log[-300:])
     else:
         shutil.copy2(silent, final)
+    review_files(final, plan["duration"], wd)
     return final

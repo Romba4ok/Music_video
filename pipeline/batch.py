@@ -129,7 +129,9 @@ def remember_cards(acc, date, song, spec):
     ws = spec.get("widgets") or []
     rec = {"date": date, "song": song, "hook": spec.get("hook", ""), "theme": spec.get("theme", "light"), "n_cards": len(ws),
            "kinds": [w.get("kind") for w in ws], "draw_share": round(sum(w.get("kind") == "draw" for w in ws) / max(1, len(ws)), 2),
-           "details": sum(bool(w.get("big") or w.get("chips")) for w in ws)}
+           "details": sum(bool(w.get("big") or w.get("chips")) for w in ws),
+           "anim_share": round(sum(bool(w.get("tw")) for w in ws) / max(1, len(ws)), 2),  # share of cards whose objects move by tweens (not frame slideshows)
+           "hook_question": str(spec.get("hook", "")).strip().endswith("?"), "renderer": "remotion"}
     Path(acc).mkdir(parents=True, exist_ok=True)
     with open(Path(acc) / CARDS_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")

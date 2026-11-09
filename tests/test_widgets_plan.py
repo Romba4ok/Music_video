@@ -121,3 +121,26 @@ def test_render_rejects_props_without_cards():
 def test_author_keeps_chips_and_big_for_drawings():
     w = author.sanitize_widgets([{"lines": [0], "kind": "draw", "frames": [GOOD], "chips": ["а", "б", "в", " "], "big": "×2"}], 1)
     assert w[0]["chips"] == ["а", "б"] and w[0]["big"] == "×2"
+
+
+def test_cards_snap_to_a_near_beat_and_keep_order():
+    plan = _plan(["scene", "scene", "scene"])
+    starts = [s["start"] for s in plan["scenes"]]
+    plan["beats"] = [round(starts[1] + 0.1, 3), round(starts[2] + 0.6, 3)]  # one beat close to card 2, one too far from card 3
+    props = wp.resolve(plan, SPEC, CFG)
+    got = [s["start"] for s in props["scenes"]]
+    assert got[1] == plan["beats"][0] and got[2] == starts[2]  # snapped / left alone
+    assert all(a["end"] <= b["start"] + 1e-6 or a["role"] == "outro" for a, b in zip(props["scenes"], props["scenes"][1:])), "no overlap after snapping"
+    assert wp.resolve(plan, SPEC, dict(CFG, beat_snap_sec=0))["scenes"][1]["start"] == starts[1]  # switched off
+
+
+@pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="ffmpeg not installed")
+def test_motion_check_tells_a_still_picture_from_a_moving_one(tmp_path):
+    import subprocess
+    from pipeline import qa
+    still, moving = tmp_path / "still.mp4", tmp_path / "moving.mp4"
+    for out, src in ((still, "color=c=gray:s=1080x1920:d=3:r=30"), (moving, "color=c=gray:s=1080x1920:d=3:r=30,noise=alls=60:allf=t")):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", src, "-pix_fmt", "yuv420p", str(out)], check=True)
+    cards = [{"start": 0.0, "end": 3.0}]
+    assert qa.motion_levels(still, cards)[0] < qa.STILL_DIFF < qa.motion_levels(moving, cards)[0]
+    assert qa.motion_levels(still, [{"start": 0.0, "end": 0.8}]) == [None]  # too short to tell

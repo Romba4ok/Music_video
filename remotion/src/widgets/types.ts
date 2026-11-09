@@ -11,6 +11,9 @@ export type Pal = { b: [string, string, string]; alt: [string, string, string]; 
 export type WidgetsProps = {
   fps: number; width: number; height: number; duration: number;
   dark: boolean; alternate: boolean; pal: Pal;
-  artist: string; title: string; credit: string; hook: string; hookD: number; ostart: number; nCards: number; hasCap: boolean;
+  artist: string; title: string; credit: string; series?: string; hook: string; hookD: number; ostart: number; nCards: number; hasCap: boolean;
   scenes: Scene[];
 };
+
+// props of every card picture (820x340 body): u = seconds since the card started, d = its length
+export type BodyProps = { w: Widget; i: number; u: number; d: number; text: string; ta: string; tb: string; acc: string; taReadable: string };

@@ -1,12 +1,16 @@
 """Data tables of the widget kinds: default app/icon/category per kind, island notifications and toasts. The pictures themselves are drawn
 by remotion/src/widgets/Bodies.tsx; nothing here renders."""
-NEW_KINDS = ("pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid")
+NEW_KINDS = ("pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid",
+             "weather", "typing", "bloom", "duo", "breath", "deep", "unlock", "night")  # the last eight are the animated scenes (remotion/src/widgets/Scenes.tsx)
 # kind -> (app title, icon colour, category line under the title)
 DEFAULT_APP = {
     "pair": ("Двое", "#ff9a6b", "контакты"), "pulse": ("Пульс", "#ff4f6d", "здоровье"), "route": ("Карты", "#2fb86b", "маршрут"),
     "venn": ("Вместе", "#ff4f8b", "общий альбом"), "ring": ("Настроение", "#ffb020", "сегодня"),
     "thermo": ("Здоровье", "#ff4f6d", "температура"), "alert": ("Оповещение", "#ff3b3b", "срочное"),
-    "target": ("Прицел", "#14141f", "цель найдена"), "versus": ("Ожидание", "#8a6bff", "сравнение"), "draw": ("Заметки", "#ffb020", "набросок"), "polaroid": ("Фото", "#ff7a3d", "воспоминание"),
+    "target": ("Прицел", "#14141f", "цель найдена"),
+    "weather": ("Погода", "#5aa9ff", "на душе"), "typing": ("Сообщения", "#34c78a", "нет ответа"), "bloom": ("Календарь", "#ff7a59", "весна"),
+    "duo": ("Избранное", "#f5b942", "только ты"), "breath": ("Дыхание", "#7a6be0", "вдох · выдох"), "deep": ("Глубина", "#3fb7c4", "всё глубже"),
+    "unlock": ("Замок", "#ef8f9a", "без секретов"), "night": ("Сны", "#6b5bd6", "сладкие грёзы"), "versus": ("Ожидание", "#8a6bff", "сравнение"), "draw": ("Заметки", "#ffb020", "набросок"), "polaroid": ("Фото", "#ff7a3d", "воспоминание"),
 }
 # island notification shown with the card unless the widget sets "notify": false
 DEFAULT_NOTIFY = {

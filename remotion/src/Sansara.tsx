@@ -2,6 +2,8 @@ import React from "react";
 import { AbsoluteFill, Easing, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { Audio } from "@remotion/media";
 import { ThreeCanvas } from "@remotion/three";
+import { Bust, Person } from "./widgets/shapes";
+export { Bust, Person };
 import { loadFont } from "@remotion/google-fonts/Manrope";
 
 const { fontFamily } = loadFont("normal", { weights: ["500", "700", "800"], subsets: ["cyrillic", "latin"] });
@@ -37,19 +39,6 @@ export const COOL = "#4aa8d8";
 export const ROSE = "#ef8f9a";
 
 // ---------- 2D objects ----------
-export const Bust: React.FC<{ x: number; y: number; s: number; color: string; opacity?: number }> = ({ x, y, s, color, opacity = 1 }) => (
-  <g transform={`translate(${x} ${y}) scale(${s})`} fill={color} opacity={opacity}>
-    <circle cx={0} cy={-112} r={32} />
-    <path d="M-62 0 C-62 -62 -36 -84 0 -84 C36 -84 62 -62 62 0 Z" />
-  </g>
-);
-// full body, feet at (x,y), height h (px)
-export const Person: React.FC<{ x: number; y: number; h: number; color: string; opacity?: number }> = ({ x, y, h, color, opacity = 1 }) => (
-  <g transform={`translate(${x} ${y}) scale(${h})`} fill={color} opacity={opacity}>
-    <circle cx={0} cy={-0.86} r={0.1} />
-    <path d="M-0.15 -0.4 Q-0.15 -0.72 0 -0.72 Q0.15 -0.72 0.15 -0.4 L0.12 -0.4 L0.12 0 L0.02 0 L0.02 -0.3 L-0.02 -0.3 L-0.02 0 L-0.12 0 L-0.12 -0.4 Z" />
-  </g>
-);
 const Ripples: React.FC<{ x: number; y: number; u: number; from: number; max: number; color: string }> = ({ x, y, u, from, max, color }) => {
   if (u < from) return null;
   return (
