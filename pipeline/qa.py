@@ -12,6 +12,20 @@ def max_total(cfg):
     return cfg["max_len"] + cfg.get("close_overrun", 8.0) + 4
 
 
+def plan_duration_errors(plan, cfg):
+    """Checked BEFORE the (slow) render: the scenario must already fit min_len..max_total with the margin script_gen.MIN_MARGIN, or the video would be
+    refused after a full render (the limit itself is never relaxed). Empty list = fine."""
+    d, lo, hi = plan["duration"], cfg["min_len"], max_total(cfg)
+    errs = []
+    if plan.get("short") or d < lo:
+        ext = plan.get("extended") or {}
+        errs.append(f"scenario {d:.2f}s is shorter than min_len {lo}s even after adding real audio around the lyrics (lead-in {ext.get('preroll', 0)}s, "
+                    f"hold {ext.get('hold', 0)}s): the song has no more lyrics or audio in reach")
+    if d > hi:
+        errs.append(f"scenario {d:.2f}s is longer than the limit {hi:g}s")
+    return errs
+
+
 def validate_spec(spec, cfg):
     errs = []
     for k in ("id", "mode", "song", "metaphor", "palette", "caption", "hashtags", "ai_label"):
@@ -115,7 +129,8 @@ def run_checks(spec, video, plan, cfg):
         "media_format", f'{v.get("width")}x{v.get("height")} {fps:.2f}fps {v.get("codec_name")}')
     dur = float(info["format"]["duration"])
     exp = plan["duration"]
-    add(cfg["min_len"] <= dur <= max_total(cfg) and abs(dur - exp) <= 0.25, "duration", f"{dur:.2f}s (expected {exp}s, {cfg['min_len']}-{max_total(cfg):g})")
+    frame = 1.5 / max(cfg["fps"], 1)  # an MP4 is whole frames and AAC adds a packet: the file may be a frame or two off the plan; the limits stay
+    add(cfg["min_len"] - frame <= dur <= max_total(cfg) + frame and abs(dur - exp) <= 0.25, "duration", f"{dur:.2f}s (expected {exp}s, {cfg['min_len']}-{max_total(cfg):g})")
     if spec["mode"] == "with_audio":
         if a is None:
             add(False, "audio", "no audio track")

@@ -262,6 +262,41 @@ def pick_fragment(lines, popular_line="", min_len=30, max_len=60, gap=0.6, choru
             "length": round(length(first, last), 2), "reason": reason + ("; start pinned by file name" if pin else ""), "pinned": pin}
 
 
+def ensure_min_len(lines, frag, cfg):
+    """A fragment shorter than `min_len` is a video that QA will refuse after a full render (12.6 s of lyrics + 2.5 s end card = 15.1 s < 20 s).
+    Every way to such a window is closed here: the window grows over neighbouring REAL lines, forward first (a pinned start stays), then backward
+    (a pin is moved only when nothing else is left, and the reason says so), never past max_len + close_overrun. If the song has no more lyrics in reach
+    the fragment is returned unchanged with `short` set: the caller adds real audio around it (script_gen.fit_duration) or refuses the song."""
+    if not frag:
+        return frag
+    min_len, limit = cfg["min_len"], cfg["max_len"] + cfg.get("close_overrun", 8.0)
+    first, last = frag["first"], frag["last"]
+
+    def length(a, b):
+        return lines[b]["end"] - lines[a]["start"]
+
+    if length(first, last) >= min_len:
+        return frag
+    moved_start = False
+    while length(first, last) < min_len:
+        if last + 1 < len(lines) and length(first, last + 1) <= limit:
+            last += 1
+        elif first > 0 and length(first - 1, last) <= limit:
+            first -= 1
+            moved_start = True
+        else:
+            break
+    if (first, last) == (frag["first"], frag["last"]):
+        return dict(frag, short=True, reason=frag.get("reason", "") + f"; shorter than min_len ({frag['length']:.1f}s < {min_len}s) and no more lyrics in reach")
+    new = dict(frag, first=first, last=last, start=lines[first]["start"], end=lines[last]["end"], length=round(length(first, last), 2))
+    new["pinned"] = bool(frag.get("pinned")) and not moved_start
+    new["short"] = new["length"] < min_len
+    new["reason"] = frag.get("reason", "") + f"; extended to lines {first}..{last} ({new['length']:.1f}s) to reach min_len {min_len}s" + ("; pinned start moved" if moved_start and frag.get("pinned") else "")
+    thr = cfg["whisper"]["min_confidence"]
+    new["low_ratio"], new["max_gap"] = round(low_ratio(lines, new, thr), 3), round(max_gap(lines, new), 1)
+    return new
+
+
 def low_ratio(lines, frag, thr):
     """Share of words in the fragment that whisper recognised with probability < thr (the same measure QA uses)."""
     ws = [w for ln in lines[frag["first"]: frag["last"] + 1] for w in ln["words"]]
@@ -283,6 +318,7 @@ def pick_reliable(lines, popular_line, cfg, chorus=None):
     base = pick_fragment(lines, popular_line, cfg["min_len"], cfg["max_len"], chorus=chorus, overrun=over)
     if not base:
         return None
+    base = ensure_min_len(lines, base, cfg)
     base["low_ratio"], base["max_gap"] = round(low_ratio(lines, base, thr), 3), round(max_gap(lines, base), 1)
     if (base["low_ratio"] <= limit and base["max_gap"] <= gap_limit) or base.get("pinned"):  # a start pinned in the file name is the owner's choice
         return base
@@ -321,11 +357,12 @@ def analyze(path, popular_line="", cfg=None):
         lines, frag, note = refine_fragment(path, lines, frag, cfg)
     if note:
         frag["reason"] += "; " + note
+    frag = ensure_min_len(lines, frag, cfg)  # the second recognition pass can drop edge lines and shorten the window
     low = sum(1 for l in lines for w in l["words"] if w["p"] < cfg["whisper"]["min_confidence"])
     nwords = sum(len(l["words"]) for l in lines)
     summary = {"bpm": b["bpm"], "audio_duration": b["duration"], "lines": len(lines), "words": nwords,
                "low_confidence_words": low, "popular_line_found": bool(frag and "matched" in frag["reason"]),
-               "fragment": frag and {k: frag[k] for k in ("start", "end", "length", "reason", "low_ratio")},
+               "fragment": frag and {k: frag[k] for k in ("start", "end", "length", "reason", "low_ratio", "short") if k in frag},
                "chorus_candidates": [{"start": c["start"], "end": c["end"], "repeats": c["repeats"], "text": c["text"][:60]}
                                      for c in chorus[:3]]}
     return {"summary": summary, "lines": lines, "beats": b["beats"], "fragment": frag}

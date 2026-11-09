@@ -7,6 +7,8 @@
   "max_len": 30,
   "close_overrun": 8,
   "tail_sec": 2.5,
+  "preroll_max": 3.0,
+  "hold_max": 4.0,
   "target_lufs": -14,
   "max_true_peak": -1,
   "publish_mode": "inbox",

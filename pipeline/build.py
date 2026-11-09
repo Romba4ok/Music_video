@@ -62,6 +62,9 @@ def build_one(d, n, cfg):
         return sid, [("FAIL", "spec_valid", "; ".join(errs))], None
     try:
         plan = _plan(spec, d, n, cfg)
+        derr = qa.plan_duration_errors(plan, cfg) if spec["mode"] in ("with_audio", "tiktok") else []
+        if derr:  # fail in seconds with the reason, not after a full render
+            return sid, [("FAIL", "scenario_duration", "; ".join(derr))], None
         audio_src = ROOT / spec["audio"] if spec["mode"] == "with_audio" else None
         if audio_src is not None and not audio_src.exists():
             raise FileNotFoundError(f"audio file missing: {spec['audio']}")

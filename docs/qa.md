@@ -8,7 +8,7 @@ Output: one line per check, `PASS|FAIL|SKIP <name> <detail>`. Claude reads only 
 | 1 | spec valid | python | schema in `docs/video-spec.md`, scenes contiguous, word/time limits |
 | 2 | props check | `render.check_props` | at least one card, positive duration, end card inside the video (Remotion itself fails the render on a React error) |
 | 3 | resolution/fps/codec | ffprobe | 1080x1920, fps = config, H.264, MP4 |
-| 4 | duration | ffprobe | 30–60 s and = spec.duration ±0.1 s |
+| 4 | duration | ffprobe | `min_len`..`max_total` (config: 20 s .. max_len + close_overrun + 4 = 42 s) and = plan ±0.25 s; the file may be 1.5 frames off the limit (MP4 is whole frames), nothing more |
 | 5 | audio | ffprobe | `commentary`: no audio expected (SKIP loudness). `with_audio`: AAC present, length = video ±0.1 s, ≈ -14 LUFS, true peak ≤ -1 dBTP, fade-out at the end |
 | 6 | no empty/broken frames | ffmpeg `freezedetect`/`blackdetect` + frame count | no black > 0.3 s, frame 0 not black |
 | 7 | text not clipped | not automated since the move to Remotion: text is cut to fit by construction (`clip` in `Bodies.tsx`); check frames when a template changes (`docs/remotion.md`) | SKIP |
@@ -19,6 +19,14 @@ Output: one line per check, `PASS|FAIL|SKIP <name> <detail>`. Claude reads only 
 
 Failure policy: fix the spec fields named in the FAIL line, rerun the one failed video, max 2 retries, then write `out/<date>/qa-fail.txt` and stop. Never upload a video with any FAIL.
 Source files are kept until the final video passes QA and is uploaded.
+
+## Duration (never relaxed)
+Why 15.08 s once reached QA (Серёга — Чёрный Бумер): a 12.58 s fragment + 2.5 s end card. Nothing enforced `min_len` after the fragment was picked: `pick_fragment` stops growing when it cannot, a start pinned in the file name cannot go back, and the second recognition pass (`refine_fragment`) recomputes the window from the new lines and can shorten it. The scenario was then rendered in full and refused by QA.
+Now three layers, none of which stretches audio or adds empty frames:
+1. `analyze.ensure_min_len` grows the window over neighbouring REAL lyric lines (forward first, then back; a pinned start moves only when nothing else is left and the reason says so), after the first choice and after the second recognition pass. Lyrics too short for min_len: the fragment is marked `short`.
+2. `script_gen.fit_duration` adds REAL song audio around the lyrics until the video is `min_len + 0.12 s`: a lead-in before the first line (`preroll_max` 3 s; the first card is on screen from frame 0) and music after the last line under the last card (`hold_max` 4 s), both limited by what the song really has. Words and beats keep their place against the music (`audio_start` moves, nothing is retimed).
+3. `qa.plan_duration_errors` runs in `build` BEFORE the render: a scenario that still does not fit (or is too long) fails at once as `scenario_duration` with the reason; the render never starts.
+Tests: `tests/test_duration.py` (including the 15.08 s case).
 
 ## Stability rules (daily run)
 - **Readable cards.** Unsung words use `GREY` (6:1 on the card), the accent flash is darkened by `readable()` until it reads on the brightest background (`WORST_BG`), cards slide in opaque (a fade-in put text over the previous card), the island/clock slide instead of fading. Never use `color:transparent`, gradient text or white text on bright fills. After any template edit run `python -m pipeline.build` on a copy of a real spec and look at frames (`docs/remotion.md`): the old HyperFrames contrast check is gone, so readability is checked by eye.

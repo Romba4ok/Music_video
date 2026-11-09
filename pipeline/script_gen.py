@@ -5,6 +5,7 @@ Cards appear shortly BEFORE their first word and leave after their last word; no
 import math
 
 LEAD, HOLD, GAP = 0.25, 0.35, 0.05
+MIN_MARGIN = 0.12  # a video must be this much longer than min_len before rendering: frame rounding and the 0.01 s rounding of the plan must not push it under
 
 
 def split_words(words, max_words=8):
@@ -38,11 +39,32 @@ def _groups(n, widgets):
     return out
 
 
+def fit_duration(cfg, t0, end, audio_dur=None):
+    """Real audio to add so that fragment + end card reach min_len: (preroll, hold). preroll = song audio before the first line (the first card is
+    already on screen during it), hold = song audio after the last line, shown under the last card before the end card. Neither stretches the audio
+    nor adds empty frames; both are limited by what the song really has (`audio_dur`) and by `preroll_max` / `hold_max`.
+    Returns (preroll, hold, short): short = even with all of it the video stays under min_len (the caller must refuse the song, not render it)."""
+    tail = cfg["tail_sec"]
+    need = cfg.get("min_len", 0) + MIN_MARGIN - ((end - t0) + tail)
+    if need <= 0:
+        return 0.0, 0.0, False
+    pre_room = min(cfg.get("preroll_max", 3.0), max(0.0, t0))
+    hold_room = min(cfg.get("hold_max", 4.0), max(0.0, audio_dur - end - tail) if audio_dur else 1e9)
+    pre = min(pre_room, need / 2)  # share the need: a lead-in and a longer last card are each shorter than one long stretch
+    hold = min(hold_room, need - pre)
+    pre = min(pre_room, need - hold)
+    pre, hold = math.ceil(pre * 100) / 100, math.ceil(hold * 100) / 100
+    return pre, hold, pre + hold < need - 1e-6
+
+
 def build_scenes(analysis, song, cfg, intro=0.0, widgets=None):
     frag = analysis["fragment"]
     t0 = frag["start"]
     length = frag["end"] - t0
     tail = cfg["tail_sec"]
+    audio_dur = (analysis.get("summary") or {}).get("audio_duration")
+    pre, hold, short = fit_duration(cfg, t0, frag["end"], audio_dur)
+    intro = max(intro, pre)
     thr = cfg["whisper"]["min_confidence"]
     cards = []
     flines = analysis["lines"][frag["first"]: frag["last"] + 1]
@@ -72,9 +94,9 @@ def build_scenes(analysis, song, cfg, intro=0.0, widgets=None):
     for a, b in zip(cards, cards[1:]):
         if a["end"] > b["start"] - GAP:
             a["end"] = round(max(a["start"] + 0.2, b["start"] - GAP), 3)
-    duration = round(length + tail, 2)
+    duration = round(length + hold + tail, 2)
     cards[-1]["end"] = round(min(cards[-1]["end"], length + 0.3), 3)
-    outro_start = round(max(cards[-1]["end"] + 0.1, length + 0.3), 3)
+    outro_start = round(max(cards[-1]["end"] + 0.1, length + 0.3 + hold), 3)  # the real music after the last line plays under the last card
     outro = {"role": "outro", "text": f'{song["artist"]} — {song["title"]}', "start": outro_start, "end": duration, "words": []}
     beats = [round(b - t0, 3) for b in analysis.get("beats", []) if t0 <= b < t0 + length]
     scenes = cards + [outro]
@@ -85,5 +107,10 @@ def build_scenes(analysis, song, cfg, intro=0.0, widgets=None):
             for w in sc["words"]:
                 w["s"], w["e"] = round(w["s"] + intro, 3), round(w["e"] + intro, 3)
         beats = [round(b + intro, 3) for b in beats]
+    if pre and intro:  # the lead-in is real music: the first card is on screen from the first frame, never a bare stage
+        for sc in scenes:
+            if sc["role"] != "outro":
+                sc["start"] = 0.0
+                break
     return {"duration": round(duration + intro, 2), "scenes": scenes, "beats": beats, "audio_start": round(t0 - intro, 3),
-            "audio_len": round(duration + intro, 2), "intro": intro}
+            "audio_len": round(duration + intro, 2), "intro": intro, "extended": {"preroll": pre, "hold": hold}, "short": short}
