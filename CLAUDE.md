@@ -28,6 +28,7 @@ Automatic, free tools only, official publishing APIs only. One account now (`acc
 - `docs/hyperframes-notes.md` render contract cheat sheet
 - `docs/claude-author.md` Claude step in the batch: cards/hook/notifications written per song (prompts/widgets.md)
 - `docs/github-setup.md` reusable GitHub Actions + Drive + secrets setup, lessons learned (copy to other projects)
+- `docs/remotion.md` Remotion route: card-style videos rendered locally to mp4 (setup, new-song steps, lessons)
 - `docs/buffer.md` hand-over of ready videos to the Buffer TikTok queue (draft/queue, dedup, temp hosting)
 - `docs/widgets-template.md` widget-edit template: layout, pacing, card kinds, how to pick pictures for lyric meaning
 - `prompts/generate.md` the daily task for `claude -p`

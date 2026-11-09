@@ -13,3 +13,8 @@ accounts/*/audio/*
 *.ogg
 node_modules/
 .venv/
+.agents/
+.claude/skills/
+remotion/public/*-lyrics.json
+remotion/public/*-refined.json
+remotion/public/*.txt
