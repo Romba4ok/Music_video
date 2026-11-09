@@ -13,7 +13,7 @@ import tempfile
 
 from . import svg_safe
 from .common import ROOT
-from .render_widgets import ART_KEYS, KINDS
+from .widgets_plan import ART_KEYS, KINDS
 
 KEYS = ("kind", "app", "cat", "cap", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
         "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion", "chips", "tw")

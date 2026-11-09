@@ -32,7 +32,7 @@ def validate_spec(spec, cfg):
         errs.append("hashtags: 3-5 items starting with #")
     if spec["ai_label"] is not True:
         errs.append("ai_label must be true")
-    from .render_widgets import KINDS
+    from .widgets_plan import KINDS
     for w in spec.get("widgets") or []:
         ln = w.get("lines")
         if not (isinstance(ln, list) and ln and all(isinstance(x, int) and x >= 0 for x in ln)) or w.get("kind", "scene") not in KINDS:
@@ -109,7 +109,7 @@ def run_checks(spec, video, plan, cfg):
     cards = [s for s in plan["scenes"] if s["role"] == "lyric"]
     overlap = [i for i, (x, y) in enumerate(zip(plan["scenes"], plan["scenes"][1:])) if x["end"] > y["start"] + 1e-6]
     add(not overlap, "no_card_overlap", f"cards {overlap[:5]}" if overlap else "")
-    from .render_widgets import HOLD_MAX
+    from .widgets_plan import HOLD_MAX
     empty = [(round(x["end"] + HOLD_MAX, 1), round(y["start"], 1)) for x, y in zip(plan["scenes"], plan["scenes"][1:]) if y["start"] - x["end"] - HOLD_MAX > 0.4]
     add(not empty, "no_empty_stage", f"no card between {empty[:3]} (s)" if empty else "")  # a card is held HOLD_MAX s past its line; a longer pause leaves the stage bare
     if spec["mode"] in ("with_audio", "tiktok") and cards:

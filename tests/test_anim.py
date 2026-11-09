@@ -1,4 +1,4 @@
-from pipeline import render_widgets as rw, svg_safe
+from pipeline import svg_safe
 
 
 def test_anim_svg_keeps_ids_only_when_asked_and_scopes_them():
@@ -12,9 +12,8 @@ def test_tweens_allowlist_and_clamp():
           {"id": "zz", "to": {"x": 1}},                       # unknown shape: skipped
           {"id": "a", "to": {"opacity": "<script>"}},          # not a number: nothing left to tween
           {"id": "a", "at": 0, "to": {"y": 5}, "o": [10, 20]}]
-    js = rw._tweens(tw, {"a"}, 2, 10.0, 3.0)
-    assert len(js) == 2 and '"evil"' not in "".join(js) and "power2.out" in js[0] and '"yoyo"' not in js[0] and ",12.9);" in js[0]
-    assert '"svgOrigin": "10 20"' in js[1] and '"immediateRender": false' in js[1]  # the 2nd tween of the same shape does not reset the 1st
+    out = svg_safe.clean_tweens(tw, {"a"})
+    assert len(out) == 2 and "evil" not in str(out) and out[0]["ease"] == "power2.out" and out[0]["loop"] == "cycle" and out[0]["dur"] == 8.0 and out[1]["o"] == [10, 20]
 
 
 def test_author_keeps_animated_draw_and_drops_dead_tweens():

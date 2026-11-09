@@ -1,41 +1,48 @@
-# Remotion: видео в стиле карточек (локально, без Studio)
+# Remotion: рендер роликов (с 2026-11-09 основной и единственный)
 
-Папка `remotion/` (React + Remotion 4.0.542). Другой путь к тем же роликам, пайплайн на HyperFrames не заменяет. Рендер только в mp4 командой; Studio открывать не нужно.
+HyperFrames и `render_widgets.py` удалены. Вся картинка рисуется в `remotion/` (React + Remotion 4.0.542), в mp4 только командой, Studio не нужна.
 
-## Что внутри
-- `src/Sansara.tsx` — «Баста — Сансара» (тёмный квадрат-«телефон» 1080x1080 по центру, чёрные поля, как у виджетов пайплайна). Тут же общие кирпичи (`seg`, `rnd`, `Bust`, `Person`, палитра), их импортирует T9.
-- `src/T9.tsx` — «Т9 — Ода нашей любви» (светлый пастельный фон на весь кадр, по мотивам референсов 610ckbaby1 и jusazmjq).
-- `src/Root.tsx` — реестр композиций (`Sansara`, `T9`). Новая песня = новый файл `src/<Song>.tsx` + строка в Root.
-- `scripts/transcribe.py` — whisper-строки песни (через `pipeline.analyze.transcribe`).
-- Музыка в git не попадает (`*.mp3` в `.gitignore`), расшифровки `public/*-lyrics.json|refined.json|*.txt` тоже (это воспроизводимый промежуточный результат).
+## Как идёт рендер
+```
+spec-N.json + analysis-N.json -> script_gen.build_scenes (сценарий) -> widgets_plan.resolve (props) -> work-N/props.json
+   -> npx remotion render src/index.ts Widgets silent.mp4 --props=props.json -> ffmpeg: звук -14 LUFS -> final.mp4 -> qa.py
+```
+`pipeline/render.py` делает это внутри `python -m pipeline.build out/<дата>`. Звук Remotion не трогает.
+
+## Что где лежит
+- `pipeline/widgets_plan.py` — выбор вида карточки, приложения, иконки, уведомления, тема, очистка рисунков `draw` (`svg_safe`). Чистая функция, тесты `tests/test_widgets_plan.py`.
+- `remotion/src/widgets/Widgets.tsx` — раскладка: хук, остров, стопка карточек, шарики-связки, уведомления, смена темы, прогресс, финальная заставка.
+- `remotion/src/widgets/Bodies.tsx` — картинка каждого вида (17: scene, counter, search, camera, chat, dots, versus, draw, pair, pulse, route, venn, ring, thermo, alert, target, polaroid) + анимация 15 заготовок `arts.generated.ts`.
+- `remotion/src/widgets/anim.ts` — изинги и «твины» (то же, что раньше у GSAP): всё считается из времени кадра.
+- `remotion/src/widgets/types.ts` — контракт props с Python (меняя поле, менять с обеих сторон).
+- `remotion/src/Sansara.tsx`, `T9.tsx` — ролики, собранные вручную как образцы (светлый и тёмный стили). В пайплайн не входят.
+- `remotion/scripts/transcribe.py` — whisper-строки для ручных роликов.
+
+## Новый вид карточки
+1. Python: добавить имя в `widget_kinds.NEW_KINDS` и таблицы `DEFAULT_APP` / `DEFAULT_NOTIFY` / `DEFAULT_TOAST`, поля описать в `docs/widgets-template.md`.
+2. React: компонент в `Bodies.tsx` (820x340, время `u` — секунды от начала карточки, `d` — её длина), строка в `KINDS`.
+3. Проверить: `npx remotion still Widgets out.png --frame=N --props=work-N/props.json`, склеить кадры (`ffmpeg ... hstack`) и посмотреть; `npx tsc --noEmit`.
 
 ## Установка с нуля
 ```bash
-cd remotion && npm i                      # node 22, ffmpeg в PATH
+cd remotion && npm ci                     # node 22, ffmpeg в PATH; Chrome Headless Shell скачается при первом рендере
 npx skills add remotion-dev/skills -y     # навыки Remotion (список в skills-lock.json, папка .agents/ не в git)
 ```
-Версии закреплены: `remotion`, `@remotion/*` = 4.0.542, `@react-three/fiber@9` + `three@0.170.0` (React 19 не работает с fiber 8; `npx remotion add` падает, ставить через `npm i пакет@4.0.542`).
+Версии закреплены: `remotion`, `@remotion/*` = 4.0.542, `@react-three/fiber@9` + `three@0.170.0` (React 19 не работает с fiber 8; `npx remotion add` падает, ставить через `npm i пакет@4.0.542`). В Actions: `npm ci` и `npx remotion browser ensure` в `remotion/` + системные библиотеки Chrome (см. `.github/workflows/generate.yml`; на Actions пока не запускалось).
 
-## Новая песня: порядок
-1. Аудио лежит в `audio/` (или `accounts/main/audio/`). Скопировать в `remotion/public/<name>.mp3`; сам не скачивать.
-2. Расшифровка (всей песни `small`, затем окно фрагмента `large-v3`, он чище):
-   ```bash
-   .venv/Scripts/python.exe -I remotion/scripts/transcribe.py "audio/A - B.mp3" remotion/public/b-lyrics.json
-   .venv/Scripts/python.exe -I remotion/scripts/transcribe.py "audio/A - B.mp3" remotion/public/b-refined.json large-v3 <от> <до>
-   ```
-   Читать только `*.txt` рядом (Read), текст песни брать только оттуда, сомнительные слова не угадывать.
-3. Фрагмент 20–35 с, лучше припев и мысль, закончить там, где кончается мысль. Концы по тайм-кодам whisper, проверить на слух.
-4. Карточки по фразам (6–10, 2–4 с каждая): «приложение» + короткая подпись + картинка по смыслу строки; один вид один раз; не вся песня одной метафорой. Правила владельца (решение от 8 ноября 2026): текста песни на экране нет, силуэты без лиц, никаких выдуманных цифр, концовка = титульная карта (иконка, название, артист, `автор: vybex`).
-5. Хук-вопрос ≤ 36 знаков заглавными, на который отвечает фрагмент. Первый кадр = готовое превью (карточка уже на месте, хук виден, без «въезда»); отдельная `*_cover.png` с `remotion still <Comp> out.png --frame=0`.
-6. Проверка глазами: `npx remotion still <Comp> out.png --frame=N` на середине каждой карточки + хук + финал, склеить ffmpeg `hstack` и посмотреть. `npx tsc --noEmit` без ошибок.
-7. Рендер: `cd remotion && npx remotion render <Comp> ../out/<дата>-<имя>/<name>.mp4 --codec=h264` (`out/` в git не идёт). Проверить `ffprobe`: 1080x1920, 30 fps, есть aac.
+## Ручной ролик (вне пайплайна)
+1. Аудио из `audio/`, в `remotion/public/<name>.mp3` (mp3 в git не идёт); сам не скачивать.
+2. Расшифровка: `.venv/Scripts/python.exe -I remotion/scripts/transcribe.py "audio/A - B.mp3" remotion/public/b-lyrics.json`, затем окно фрагмента моделью `large-v3` (`... b-refined.json large-v3 <от> <до>`). Читать только `*.txt` рядом (Read). Текст только из whisper.
+3. Фрагмент 20–35 с, припев и законченная мысль. Карточки 6–10 по 2–4 с, один вид один раз, текста песни на экране нет, силуэты без лиц, без выдуманных цифр, концовка = титульная карта. Первый кадр = готовое превью.
+4. Кадры: `npx remotion still <Comp> out.png --frame=N`; рендер: `npx remotion render <Comp> ../out/<дата>-<имя>/<name>.mp4 --codec=h264`.
 
-## Что не сделано автоматически (проверять руками)
-- `pipeline/qa.py` и нормализация −14 LUFS к этим роликам не применяются; звук проверять на слух (начало и конец фрагмента могут цеплять хвосты соседних строк).
-- Тексты подписей и уведомлений пишет Claude по смыслу, перечитать.
+## Что не автоматизировано
+- Контраст и обрезка текста больше не проверяются автоматически (раньше `hyperframes check`): текст режется по длине в коде (`clip`), читаемость проверять по кадрам после правки шаблона.
+- Звук ручных роликов: `qa.py` и нормализация −14 LUFS к ним не применяются, проверять на слух.
+- Подписи и уведомления пишет Claude по смыслу, перечитывать.
 
 ## Уроки
-- TikTok-ссылки `yt-dlp` не скачивает (ошибка страницы): референсы смотреть в Chrome (`claude-in-chrome`), 3–4 снимка через 3–4 с.
-- Консоль Windows ломает кириллицу: результаты скриптов писать в UTF-8 файл и читать через Read.
-- `ThreeCanvas` ставить только внутри нужной карточки (монтируется, пока карточка видна): 3D рендерится медленнее.
-- Не делать лишних Studio: `npx remotion studio` держит порт, потом `taskkill`.
+- TikTok-ссылки `yt-dlp` не скачивает: референсы смотреть в Chrome (`claude-in-chrome`), 3–4 снимка через 3–4 с.
+- Консоль Windows ломает кириллицу: результаты скриптов писать в UTF-8 файл и читать через Read; `-m pipeline.build` запускать без `-I`.
+- `ThreeCanvas` ставить только внутри нужной карточки: 3D рендерится медленнее.
+- Studio держит порт; закончив, остановить процесс.

@@ -272,21 +272,8 @@ def test_a_sentence_that_goes_on_is_not_a_finished_thought():
     assert analyze.pick_fragment(lines, "=Одни гудки", 3, 24, overrun=10.0, chorus=[])["last"] == 3  # an owner-pinned start keeps the old end rule («хлопнет дверь»), the thought-closing does not move it
 
 
-# ---- guards against defects found on real renders (2026-11-07)
-def test_card_never_covers_the_island_or_the_player_chip():
-    from pipeline import render_widgets as rw
-    for h in (rw.CARD_H, rw.CARD_H + rw.CAP_H):  # without and with the caption row
-        clip_h = h + 40
-        grow = clip_h * (rw.CARD_ZOOM - 1) / 2
-        assert rw.CARD_TOP - grow >= 150, "the zoomed card must start below the island + notifications (they end at y=140)"
-        assert rw.CARD_TOP + clip_h + grow <= 820, "the zoomed card must end above the author chip (y=825)"
 
 
-def test_long_artist_names_keep_the_song_title_visible():
-    from pipeline import render_widgets as rw
-    assert rw._full("Баста", "8800", 32) == "Баста — 8800"
-    assert rw._full("9грамм BUGZ feat. Mic Dogg", "Такая Загажочная", 32) == "Такая Загажочная"  # not «9грамм BUGZ feat. Mic Dogg — Та…»
-    assert rw._full("", "Романс", 32) == "Романс"
 
 
 def test_qa_flags_a_bare_stage_between_cards(monkeypatch):

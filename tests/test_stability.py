@@ -1,4 +1,4 @@
-"""Stability of the daily run: readable cards (contrast, painted text), HyperFrames check handling, audio validation,
+"""Stability of the daily run: audio validation,
 low-confidence lyrics, one bad song never stops the batch."""
 import json
 import shutil
@@ -6,81 +6,12 @@ import subprocess
 
 import pytest
 
-from pipeline import analyze, batch, download, render, render_widgets as rw, script_gen
+from pipeline import analyze, batch, download, render, script_gen
 from pipeline.common import load_config
 
 CFG = load_config()
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
-
-
-# ---- readable cards
-def test_unsung_word_grey_and_accents_pass_contrast():
-    assert rw.contrast(rw.GREY, rw.CARD_BG) >= 3.0 and rw.contrast(rw.GREY, rw.WORST_BG) >= 3.0  # also under an orb / a fading card
-    for col in ("#ff9a6b", "#ff7a3d", "#8a6bff", "#3b8bff", "#ff4f6d", "#4a6a9a", "#14956f", "#ffd400", "#ffffff", "#abc"):
-        assert rw.contrast(rw.readable(col), rw.CARD_BG) >= 3.0 and rw.contrast(rw.readable(col), rw.WORST_BG) >= 3.0, col
-    assert rw.readable("not-a-colour") == rw.INK and rw.readable("#14141f") == "#14141f"
-    assert rw.readable("#3b6cff") != "#14141f"  # a colour that already reads is only darkened as far as needed, hue kept
-
-
-def _page(palette, kinds=None):
-    kinds = kinds or list(rw.KINDS)
-    t, lines = 0.0, []
-    for i, _ in enumerate(kinds):
-        ws = [{"w": w, "s": t + j * .45, "e": t + j * .45 + .4, "p": .9} for j, w in enumerate("я иду домой по улицам".split())]
-        lines.append({"start": ws[0]["s"], "end": ws[-1]["e"], "text": "я иду домой по улицам", "words": ws})
-        t = ws[-1]["e"] + .4
-    an = {"lines": lines, "fragment": {"first": 0, "last": len(lines) - 1, "start": 0, "end": lines[-1]["end"]}, "beats": [1, 2]}
-    wds = [{"lines": [i], "kind": k, "art": "sunset"} for i, k in enumerate(kinds)]
-    plan = script_gen.build_scenes(an, {"artist": "A", "title": "8800"}, CFG, intro=1.2, widgets=wds)
-    return rw.build_html(plan, {"palette": palette, "song": {"artist": "A", "title": "8800"}, "hook": "ХУК", "metaphor": "love"}, CFG)
-
-
-@pytest.mark.parametrize("palette", ["dusk", "cold", "warm", "contrast"])
-def test_no_invisible_text_and_orbs_marked_as_overlays(palette):
-    h = _page(palette)
-    assert "color:transparent" not in h and "text-fill-color" not in h  # glyphs are always painted with an opaque colour
-    assert "#b9b4cf" not in h  # the old 2:1 grey
-    assert 'class="cr" style' not in h and 'class="cr" data-layout-allow-occlusion' in h  # orbs fly over text on purpose
-
-
-def test_result_widget_text_is_solid_and_readable():
-    h = _page("warm", ["search"])
-    css = h[h.index(".rbig{"):].split("}")[0]
-    assert "color:#" in css and "transparent" not in css
-    col = css.split("color:")[1].split(";")[0]
-    assert rw.contrast(col, rw.CARD_BG) >= 3.0
-
-
-# ---- HyperFrames check: diagnostics are acted on, not hidden
-def _fake_check(monkeypatch, data):
-    monkeypatch.setattr(render, "_run", lambda cmd, stdout_only=False, **kw: (0, "progress...\n" + json.dumps(data)))
-
-
-def test_check_blocks_contrast_and_unpainted_text_even_as_warnings(tmp_path, monkeypatch, capsys):
-    data = {"ok": True, "contrast": {"findings": [{"code": "contrast_aa_failure", "severity": "warning", "selector": "#c0w1", "text": "дала",
-                                                   "message": "Contrast is 1.99:1; WCAG AA requires 3:1.", "suggestedColor": "rgb(149,145,167)"}]},
-            "layout": {"findings": [{"code": "text_not_painted", "severity": "error", "selector": "#rb2", "text": "0 результатов",
-                                     "message": "Text paints with an effectively transparent fill.", "fixHint": "Set an opaque color."}]},
-            "craft": {"findings": [{"code": "film_silent", "severity": "warning", "message": "no sound"}]}}
-    _fake_check(monkeypatch, data)
-    ok, errs = render.check(tmp_path)
-    assert not ok and len(errs) == 2
-    assert any("contrast_aa_failure" in e and "#c0w1" in e and "1.99" in e for e in errs)
-    assert any("text_not_painted" in e and "#rb2" in e for e in errs)
-    assert json.loads((tmp_path / "check.json").read_text(encoding="utf-8"))["ok"] is True  # full report kept for diagnosis
-    assert "1 other warnings" in capsys.readouterr().out  # the remaining warning is counted, not hidden
-
-
-def test_check_passes_when_only_ordinary_warnings(tmp_path, monkeypatch):
-    _fake_check(monkeypatch, {"ok": True, "lint": {"findings": [{"code": "overlapping_gsap_tweens", "severity": "warning", "message": "x"}]}})
-    assert render.check(tmp_path) == (True, [])
-
-
-def test_check_unreadable_output_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(render, "_run", lambda cmd, stdout_only=False, **kw: (1, "npm ERR!"))
-    ok, errs = render.check(tmp_path)
-    assert not ok and "unreadable" in errs[0]
 
 
 # ---- low-confidence lyrics: move to a reliable window, never invent words
@@ -244,45 +175,6 @@ def test_unreliable_lyrics_are_not_rendered_and_the_rest_continue(tmp_path):
 NEW_ARTS = ("phone", "window", "flame", "lock", "bird", "wave")
 
 
-def test_new_pictures_are_available_to_claude_and_the_fallback():
-    assert len(rw.ART_KEYS) >= 15 and all(a in rw.ART_KEYS for a in NEW_ARTS)
-    for a in NEW_ARTS:
-        assert f'id="' in rw._art(a, 3) and rw._art_anim(a, 3, 1.0, 2.0)  # drawn and animated
-    from pipeline import author
-    ws = author.sanitize_widgets([{"lines": [0], "kind": "scene", "art": "flame"}, {"lines": [1], "kind": "scene", "art": "nonsense"}], 2)
-    assert ws[0]["art"] == "flame" and "art" not in ws[1]
-
-
-def test_pick_never_repeats_a_picture_inside_one_video():
-    texts = ["а дальше тишина", "и снова та же ночь", "он молча ушёл", "ночь и тишина", "снова ночь", "ночь", "ночь опять", "ночью", "ночь без сна"]
-    used = []
-    for i, t in enumerate(texts):
-        used.append(rw.ARTS[rw._pick(t, i, used, seed=5)][0])
-    assert len(set(used)) == len(used)  # even when every line says "ночь" (moon)
-    assert rw.ARTS[rw._pick("звонит телефон", 0)][0] == "phone"  # meaning still comes first
-    assert rw._pick("звонит телефон", 0, ["phone"]) != rw._pick("звонит телефон", 0)  # ...unless that picture was already shown
-
-
-def test_auto_kind_rotates_and_is_capped():
-    line = "они смотрят, а я один, и кто мне скажет почему"  # matches camera, dots, search
-    kinds = {rw._auto(line, "", {}, seed)["kind"] for seed in range(6)}
-    assert len(kinds) >= 2  # different songs/lines do not all get the same widget
-    assert rw._auto(line, "camera", {"dots": 2, "search": 2}) == {}  # previous kind and kinds used twice are skipped
-    assert rw._auto("смерть рядом, любовь", "", {}, 3)["kind"] == "alert"  # danger keeps priority
-
-
-def test_builds_differ_between_songs_for_the_same_lines():
-    lines = [{"start": i * 3.0, "end": i * 3.0 + 2.5, "text": "ну вот и всё теперь тихо",
-              "words": [{"w": w, "s": i * 3.0 + j * .4, "e": i * 3.0 + j * .4 + .35, "p": .9} for j, w in enumerate("ну вот и всё теперь тихо".split())]} for i in range(8)]
-    an = {"lines": lines, "fragment": {"first": 0, "last": 7, "start": 0, "end": 24}, "beats": []}
-    seen = []
-    for t in ("Один", "Другой", "Третий"):
-        plan = script_gen.build_scenes(an, {"artist": "A", "title": t}, CFG, intro=1.2)
-        h = rw.build_html(plan, {"palette": "cold", "song": {"artist": "A", "title": t}, "hook": "X", "metaphor": "love"}, CFG)
-        seen.append(tuple(a for a in rw.ART_KEYS if f'class="sc"' in h and h.count(a) and a in ("lock", "bird", "wave", "flame", "phone", "window") and f'id="{ {"lock": "lk", "bird": "bd", "wave": "wv", "flame": "fl", "phone": "pw", "window": "wl"}[a] }' in h))
-    assert len(set(seen)) > 1
-
-
 def test_author_prompt_asks_for_other_kinds_than_the_rest_of_the_day():
     from pipeline import author
     lines = [{"start": 0, "end": 3, "text": "строка", "words": []}]
@@ -351,14 +243,6 @@ def test_author_turns_a_bad_drawing_into_a_template_picture_and_keeps_good_ones(
     assert ws[1] == {"lines": [1], "kind": "scene", "art": "lock"}  # nothing unsafe survives; the line still gets a picture
     assert ws[2]["kind"] == "scene"
     assert ws[3]["kind"] == "draw" and "motion" not in ws[3]  # unknown motion ignored (renderer defaults to float)
-
-
-def test_draw_card_renders_scoped_svg_and_a_loop_and_falls_back():
-    h, j = rw._body("draw", {"svg": GOOD, "motion": "pulse"}, 4, 3.0, 2.5, "x")
-    assert 'id="dr4"' in h and "dr4_lg" in h and "<script" not in h and j and "scale" in j[0]
-    h2, j2 = rw._body("draw", {"svg": "<script/>", "art": "flame"}, 5, 3.0, 2.5, "x")  # hand-edited spec: bad drawing never reaches the page
-    assert "<script" not in h2 and 'id="fl5"' in h2
-    assert all(rw._draw_anim(m, 1, 0, 2)[0].startswith('tl.fromTo("#dr1"') for m in (*svg_safe.MOTIONS, None))
 
 
 def test_prompt_explains_drawing_and_wants_no_text_in_pictures():
@@ -437,41 +321,6 @@ def test_refine_is_off_without_a_different_model():
         assert analyze.refine_fragment("x.mp3", lines, frag, cfg) == (lines, frag, "")
 
 
-def test_muted_text_greys_read_on_pastel_backgrounds_too():
-    import pathlib
-    src = "".join(pathlib.Path(f).read_text(encoding="utf-8") for f in ("pipeline/render_widgets.py", "pipeline/widget_kinds.py"))
-    for old in ("#7a7592", "#7a7a92", "#6b6585"):  # these measured 2.8-2.97:1 on the pastel background (a real HyperFrames failure)
-        assert old not in src
-    assert rw.contrast("#5f5a7c", "#f1c7e2") >= 4 and rw.contrast("#5f5a7c", rw.CARD_BG) >= 6
-
-
-def test_text_on_the_dark_island_banner_stays_light():
-    css = rw.build_html.__code__  # noqa: F841 - the CSS lives inside build_html's template; check the rendered page instead
-    h = _page("dusk", ["pair"])
-    now = h[h.index(".now{"):].split("}")[0]
-    col = now.split("color:")[1].split(";")[0]
-    assert rw.contrast(col, "#14141f") >= 4.5  # "сейчас" sits on the dark banner: darkening every grey made it unreadable
-
-
-def test_a_drawn_card_can_be_several_frames_and_only_safe_ones_survive():
-    ws = author.sanitize_widgets([
-        {"lines": [0], "kind": "draw", "frames": [GOOD, "<script>1</script>", GOOD, GOOD, GOOD, GOOD, GOOD]},  # bad frame dropped, max 5 kept
-        {"lines": [1], "kind": "draw", "frames": ["<script>1</script>"], "art": "moon"},                         # nothing usable -> template picture
-        {"lines": [2], "kind": "pair", "frames": [GOOD]}], 3)                                                   # frames only belong to draw
-    assert ws[0]["kind"] == "draw" and len(ws[0]["frames"]) == 5 and all("<circle" in f for f in ws[0]["frames"])
-    assert ws[1]["kind"] == "scene" and "frames" not in ws[1] and "frames" not in ws[2]
-
-
-def test_frames_follow_each_other_about_once_a_second():
-    from pipeline import render_widgets as rw
-    html_, js = rw._body("draw", {"frames": [GOOD, GOOD, GOOD], "svg": "<script>1</script>"}, 4, 10.0, 3.0, "x")
-    assert html_.count('id="df4_') == 3 and 'id="dr4f1_lg"' in html_ and 'id="dr4f2_lg"' in html_ and "<script" not in html_
-    assert any('"#df4_1"' in l and "opacity:1" in l and "10.9" not in l and ",11.0)" in l.replace(" ", "") or ",11)" in l for l in js)  # frame 2 comes in at +1 s
-    assert any('"#df4_0"' in l and "opacity:0" in l for l in js)  # and the previous one leaves
-    h1, j1 = rw._body("draw", {"svg": GOOD}, 5, 0.0, 3.0, "x")  # a single drawing still works as before
-    assert h1.count('id="df5_') == 1 and not any("opacity:1,duration:.3" in l for l in j1)
-
-
 def test_a_long_line_can_be_two_cards_and_empty_lines_join_a_neighbour():
     from pipeline import author, script_gen
     words = lambda t0, n: [{"w": f"w{k}", "s": t0 + k * .5, "e": t0 + k * .5 + .4, "p": .9} for k in range(n)]
@@ -497,20 +346,3 @@ def test_cards_are_remembered_between_runs_and_joined_with_views(tmp_path):
     assert sorted(r["views"] for r in rows) == [100, 300] and ("theme", "dark", 1, 300) in out
 
 
-def test_alternate_theme_adds_a_flip_layer_only_when_enabled():
-    from pipeline import render_widgets as rw, script_gen
-    an = {"lines": [{"start": 0, "end": 3, "text": "a", "words": [{"w": "a", "s": 0, "e": 1, "p": .9}]}], "fragment": {"first": 0, "last": 0, "start": 0.0, "end": 3.0}, "beats": []}
-    plan = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}})
-    spec = {"palette": "dusk", "song": {"artist": "A", "title": "T"}, "hook": "X", "metaphor": "love"}
-    assert 'id="altbg"' in rw.build_html(plan, spec, dict(CFG, alternate_theme=True))
-    assert 'id="altbg"' not in rw.build_html(plan, spec, dict(CFG, alternate_theme=False))
-
-
-def test_dark_theme_renders_light_text_on_a_dark_stage():
-    from pipeline import render_widgets as rw, script_gen
-    an = {"lines": [{"start": 0, "end": 3, "text": "т", "words": [{"w": "т", "s": 0, "e": 1, "p": .9}]}], "fragment": {"first": 0, "last": 0, "start": 0.0, "end": 3.0}, "beats": []}
-    plan = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}})
-    spec = {"palette": "dusk", "song": {"artist": "A", "title": "T"}, "hook": "X", "metaphor": "love"}
-    cfg = dict(CFG, alternate_theme=False)  # the flip layer carries the other theme's colours on purpose
-    light, dark = rw.build_html(plan, spec, cfg), rw.build_html(plan, dict(spec, theme="dark"), cfg)
-    assert "#15102b" in dark and "#15102b" not in light and ".ptitle{position:absolute;left:60px;top:893px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:#f6f2ff" in dark

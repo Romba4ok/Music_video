@@ -186,17 +186,6 @@ def test_pack_names_and_caption(tmp_path):
     assert "Создано ИИ" in (tmp_path / "ready" / "1 AB - T caption.txt").read_text(encoding="utf-8")
 
 
-def test_intro_shifts_scenes_and_audio_start():
-    from pipeline import render_widgets, script_gen
-    words = [{"w": f"w{i}", "s": 10 + i * .5, "e": 10.4 + i * .5, "p": .9} for i in range(6)]
-    an = {"lines": [{"start": 10, "end": 13, "text": "x", "words": words}],
-          "fragment": {"first": 0, "last": 0, "start": 10.0, "end": 42.0}, "beats": [10.5]}
-    cfg = load_config()
-    p0, p1 = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, cfg), script_gen.build_scenes(an, {"artist": "A", "title": "T"}, cfg, intro=1.6)
-    assert p1["audio_start"] == 8.4 and p1["intro"] == 1.6 and p1["duration"] == round(p0["duration"] + 1.6, 2)
-    assert p1["scenes"][0]["start"] == round(p0["scenes"][0]["start"] + 1.6, 3)
-    page = render_widgets.build_html(p1, {"song": {"artist": "A", "title": "T"}, "palette": "dusk"}, cfg)
-    assert 'id="clipIntro"' in page and 'data-composition-id="main"' in page
 
 
 def test_parse_name_handles_site_filenames():

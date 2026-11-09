@@ -1,10 +1,10 @@
 # Music Video Factory
 
-Автоматический конвейер: песня → анализ текста и битов → вертикальное видео (HyperFrames) → QA → очередь TikTok через Buffer (официальный GraphQL API), 3 ролика в день.
+Автоматический конвейер: песня → анализ текста и битов → вертикальное видео (Remotion) → QA → очередь TikTok через Buffer (официальный GraphQL API), 3 ролика в день.
 Правила для Claude: `CLAUDE.md`. Права и источники: `docs/rights.md`.
 
 ## Шаблон
-`config.json: style` = `widgets` (по умолчанию), формат «widget edit»: квадрат 1:1 с интерфейсом телефона посреди кадра 9:16, хук-вопрос в верхнем чёрном поле, заставка с обложкой и `автор: vybex` (`handle` в config), остров-плеер с эквалайзером, на каждую строку анимированная карточка (пара, пульс, маршрут, кольцо, прицел, поиск, чат и др.), уведомление в острове с каждой карточкой, плеер/прогресс внизу, финальная заставка. Движение: карточка качается на битах, стопка карточек, шарик-связка, вибрация, блики, ничто не стоит. `cards` — старый текстовый стиль. Подробно и как подбирать картинки под смысл: `docs/widgets-template.md`. Код: `pipeline/render_widgets.py`, `pipeline/widget_kinds.py`.
+Формат ролика (единственный) «widget edit»: квадрат 1:1 с интерфейсом телефона посреди кадра 9:16, хук-вопрос в верхнем чёрном поле, заставка с обложкой и `автор: vybex` (`handle` в config), остров-плеер с эквалайзером, на каждую строку анимированная карточка (пара, пульс, маршрут, кольцо, прицел, поиск, чат и др.), уведомление в острове с каждой карточкой, плеер/прогресс внизу, финальная заставка. Движение: карточка качается на битах, стопка карточек, шарик-связка, вибрация, блики, ничто не стоит. `cards` — старый текстовый стиль. Подробно и как подбирать картинки под смысл: `docs/widgets-template.md`. Код: `pipeline/render_widgets.py`, `pipeline/widget_kinds.py`.
 
 ## Два режима
 - **AUTO** (`with_audio`): звук из разрешённого источника (CC0/CC-BY или ваш файл) вшивается в mp4. `python -m pipeline batch --mode auto --count 3`
@@ -28,11 +28,11 @@
 |---|---|---|---|
 | 1 | заранее | Вы кладёте песни `Исполнитель - Название [начало строки].mp3` в `VYBEX/audio` на Google Drive | **Google Drive** |
 | 2 | 08:00 Алматы | Планировщик отправляет запрос на запуск workflow `generate` (`workflow_dispatch`). Расписание самого GitHub из файла убрано. Два запуска не идут одновременно (`concurrency`) | **cron-job.org** → **GitHub Actions** |
-| 3 | сразу | GitHub поднимает виртуальную машину Ubuntu, ставит Node 22, Python 3.12, ffmpeg, rclone, зависимости и Chrome для HyperFrames. Секреты и переменные берутся из Settings репозитория | **GitHub Actions**, **GitHub Secrets/Variables** |
+| 3 | сразу | GitHub поднимает виртуальную машину Ubuntu, ставит Node 22, Python 3.12, ffmpeg, rclone, зависимости и Chrome для Remotion. Секреты и переменные берутся из Settings репозитория | **GitHub Actions**, **GitHub Secrets/Variables** |
 | 4 | дальше | rclone забирает `audio/` из Drive (токен обновляется по refresh-token) | **Google Drive API** через rclone |
 | 5 | дальше | ffprobe проверяет файл, whisper распознаёт слова с таймкодами, librosa считает биты, выбирается фрагмент 20–40 с без пауз и с надёжным текстом | **faster-whisper** (модель с Hugging Face, кэшируется), **librosa**, **ffmpeg** |
 | 6 | дальше | Claude пишет хук, подпись, обрезку по смыслу, карточки и рисунки SVG для каждой строки. Без него карточки подбираются по ключевым словам | **Claude Code** (подписка, секрет `CLAUDE_CODE_OAUTH_TOKEN`) |
-| 7 | дальше | HTML карточек рендерится в видео 1080×1920, звук вшивается (−14 LUFS), проверка `hyperframes check` и QA. Не прошло: ролик не попадёт в `ready/` | **HyperFrames** (Node, Chrome, шрифты Google Fonts, GSAP с jsDelivr), **ffmpeg** |
+| 7 | дальше | карточки рендерит Remotion (React, `remotion/`) в видео 1080×1920, звук вшивается (−14 LUFS), затем QA. Не прошло: ролик не попадёт в `ready/` | **Remotion** (Node, Chrome Headless Shell, шрифты Google Fonts), **ffmpeg** |
 | 8 | дальше | Готовые mp4 и `caption.txt` кладутся в `VYBEX/ready/<дата>/`, обработанные песни переезжают в `done/` | **Google Drive** |
 | 9 | дальше | Видео временно загружается на публичный хостинг, потому что Buffer не принимает ссылки Drive | **Cloudinary** |
 | 10 | дальше | Ролики ставятся в очередь Buffer на 12:00, 17:00 и 21:00 по Asia/Almaty (режим `off \| plan \| draft \| queue`), состояние хранится в `Drive/state/buffer.json` | **Buffer** (GraphQL API) |
@@ -48,7 +48,7 @@
 | **Google Drive** (+ rclone) | вход (`audio/`) и выход (`ready/`, `done/`, `state/`) | `docs/drive-setup.md` | `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`, `GDRIVE_FOLDER_ID` | да |
 | **Claude Code** | карточки, хук, подпись, SVG-рисунки по смыслу строк | `docs/claude-author.md` | `CLAUDE_CODE_OAUTH_TOKEN` | нет (без него автоподбор по ключевым словам) |
 | **faster-whisper** (Hugging Face) | распознавание слов песни | `config.json: whisper` | — | да |
-| **HyperFrames** (Node, Chrome, Google Fonts, jsDelivr GSAP) | сборка видео из HTML | `docs/hyperframes-notes.md` | — | да |
+| **Remotion** (Node, Chrome Headless Shell, Google Fonts) | сборка видео из React | `docs/remotion.md` | — | да |
 | **Cloudinary** | временный публичный хостинг видео для Buffer | `docs/buffer.md` | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | для Buffer |
 | **Buffer** | очередь и публикация в TikTok | `docs/buffer.md` | `BUFFER_API_KEY`; переменные `VYBEX_BUFFER`, `VYBEX_POSTS_PER_DAY`, `VYBEX_TIMEZONE` | для публикации |
 | **TikTok** (аккаунт `@vybex.mp44`) | куда публикует Buffer | подключён в Buffer | — | для публикации |
@@ -65,7 +65,7 @@
 | `tiktok_trends` | `python -m pipeline.tiktok_trends` | хэштеги, длительность, звуки из официального Research API; запасной вариант `data/trends.json` | доступ к Research API (одобряет TikTok, не всем) |
 | `analyze` | `python -m pipeline.analyze out/<дата>` | whisper (слова с таймкодами), биты, припев, фрагмент 20–40 с, заканчивается на конце фразы | `songs.json` |
 | `script_gen` | (внутри build) | строки → карточки без наложений, слова по таймкодам | — |
-| `render` | (внутри build) | HTML → HyperFrames → mp4, микс звука (-14 LUFS, fade out) | Node 22, ffmpeg, Chrome для HyperFrames |
+| `render` | (внутри build) | props.json → Remotion → mp4, микс звука (-14 LUFS, fade out) | Node 22, ffmpeg, Chrome для Remotion |
 | `qa` | (внутри build) | PASS/FAIL/SKIP проверки | — |
 | `build` | `python -m pipeline.build out/<дата> [--only N]` | spec → видео → QA → `meta-N.json` | `spec-N.json`, `analysis-N.json` |
 

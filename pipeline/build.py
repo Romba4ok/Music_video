@@ -1,5 +1,5 @@
 """Stage 3 (render): python -m pipeline.build out/<date> [--only N]
-spec-N.json (+ analysis-N.json) -> lyric cards -> HyperFrames render -> QA -> meta-N.json.
+spec-N.json (+ analysis-N.json) -> scenario -> Remotion render (remotion/) -> QA -> meta-N.json.
 
 Modes (spec["mode"]):
   with_audio  AUTO: audio fragment from a licensed source is mixed into the mp4.
@@ -44,8 +44,7 @@ def _plan(spec, d, n, cfg):
         if not analysis.get("fragment"):
             raise ValueError("analysis has no fragment (no lyrics recognised)")
         return script_gen.build_scenes(analysis, spec["song"], cfg,
-                                       intro=cfg.get("intro_sec", 0.0) if cfg.get("style") == "widgets" else 0.0,
-                                       widgets=spec.get("widgets") if cfg.get("style") == "widgets" else None)
+                                       widgets=spec.get("widgets"))
     scenes = [{"role": "outro" if s["role"] == "outro" else "meaning", "text": s["text"], "start": s["start"],
                "end": round(s["start"] + s["dur"], 3), "words": []} for s in spec.get("scenes", [])]
     return {"duration": round(max((s["end"] for s in scenes), default=0), 2), "scenes": scenes, "beats": []}

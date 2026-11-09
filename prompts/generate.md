@@ -9,4 +9,4 @@ Cheapest option: `python -m pipeline batch --mode {{MODE}} --count 3` does steps
 6. Run `python -m pipeline.build out/{{DATE}}` (scenes from lyrics, audio mix, render, QA; prints PASS/FAIL/SKIP lines). On FAIL edit only the named spec fields and rerun with `--only <n>`; max 2 retries per video.
 7. Reply with at most 5 lines: `<id> | <artist> – <title> | PASS|FAIL`, plus any "need audio" lines. Do not upload; the workflow uploads PASSed videos (`meta-<n>.json` + `work-<n>/final.mp4`).
 
-Forbidden: web search outside REFILL, repo exploration, reading HyperFrames docs, viewing frames, writing scene HTML, reading full analysis word lists, touching `log.md`/`queue.md`, printing secrets, fetching audio from sources outside `pipeline.sources`/`pipeline.download` (they enforce the license policy).
+Forbidden: web search outside REFILL, repo exploration, reading Remotion docs, viewing frames, writing scene HTML, reading full analysis word lists, touching `log.md`/`queue.md`, printing secrets, fetching audio from sources outside `pipeline.sources`/`pipeline.download` (they enforce the license policy).

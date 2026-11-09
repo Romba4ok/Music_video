@@ -16,7 +16,7 @@
 - In `commentary` mode: no quotes from memory unless certain; paraphrase.
 
 ## Images and fonts
-- Default: no third-party images. Visuals are CSS/SVG/GSAP in `template/scenes/`; fonts are the bundled HyperFrames fonts.
+- Default: no third-party images. Visuals are React/SVG drawn in `remotion/src/widgets/`; fonts are Google Fonts (Montserrat, OFL) loaded by Remotion.
 - Third-party image only if CC0/clearly permissive, recorded in `assets/credits.json` (`{file, source_url, license, author}`); QA check #10 fails without it.
 - No cover art, artist photos, logos, clip screenshots.
 
