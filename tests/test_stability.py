@@ -497,10 +497,20 @@ def test_cards_are_remembered_between_runs_and_joined_with_views(tmp_path):
     assert sorted(r["views"] for r in rows) == [100, 300] and ("theme", "dark", 1, 300) in out
 
 
+def test_alternate_theme_adds_a_flip_layer_only_when_enabled():
+    from pipeline import render_widgets as rw, script_gen
+    an = {"lines": [{"start": 0, "end": 3, "text": "a", "words": [{"w": "a", "s": 0, "e": 1, "p": .9}]}], "fragment": {"first": 0, "last": 0, "start": 0.0, "end": 3.0}, "beats": []}
+    plan = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}})
+    spec = {"palette": "dusk", "song": {"artist": "A", "title": "T"}, "hook": "X", "metaphor": "love"}
+    assert 'id="altbg"' in rw.build_html(plan, spec, dict(CFG, alternate_theme=True))
+    assert 'id="altbg"' not in rw.build_html(plan, spec, dict(CFG, alternate_theme=False))
+
+
 def test_dark_theme_renders_light_text_on_a_dark_stage():
     from pipeline import render_widgets as rw, script_gen
     an = {"lines": [{"start": 0, "end": 3, "text": "т", "words": [{"w": "т", "s": 0, "e": 1, "p": .9}]}], "fragment": {"first": 0, "last": 0, "start": 0.0, "end": 3.0}, "beats": []}
     plan = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}})
     spec = {"palette": "dusk", "song": {"artist": "A", "title": "T"}, "hook": "X", "metaphor": "love"}
-    light, dark = rw.build_html(plan, spec, CFG), rw.build_html(plan, dict(spec, theme="dark"), CFG)
+    cfg = dict(CFG, alternate_theme=False)  # the flip layer carries the other theme's colours on purpose
+    light, dark = rw.build_html(plan, spec, cfg), rw.build_html(plan, dict(spec, theme="dark"), cfg)
     assert "#15102b" in dark and "#15102b" not in light and ".ptitle{position:absolute;left:60px;top:893px;width:960px;text-align:center;white-space:nowrap;font-weight:800;font-size:44px;color:#f6f2ff" in dark

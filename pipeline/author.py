@@ -16,7 +16,7 @@ from .common import ROOT
 from .render_widgets import ART_KEYS, KINDS
 
 KEYS = ("kind", "app", "cat", "cap", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
-        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion", "chips")
+        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion", "chips", "tw")
 NUM = ("from", "to", "fill", "zoom", "shift")  # `from`/`to` are numbers for most kinds and place names for route
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -122,9 +122,14 @@ def sanitize_widgets(widgets, n_lines, texts=None):
                     o[k] = nv
             elif k == "svg":
                 if w["kind"] == "draw":
-                    sv = svg_safe.clean(v)
+                    sv = svg_safe.clean(v, 4500, ids=True) if isinstance(w.get("tw"), list) else svg_safe.clean(v)  # an animated picture keeps the ids its tweens address
                     if sv:
                         o[k] = sv
+            elif k == "tw":  # object animation of the drawn picture (`svg_safe.clean_tweens`); fewer than 2 tweens is not an animation: the picture then floats like a still
+                if w["kind"] == "draw" and "svg" in o:
+                    tw = svg_safe.clean_tweens(v, set(re.findall(r'id="([\w-]+)"', o["svg"])), 30)
+                    if len(tw) >= 2:
+                        o[k] = tw
             elif k == "frames":  # a drawn card is a short film: up to 5 pictures that follow each other about once a second
                 if w["kind"] == "draw" and isinstance(v, list):
                     fr = [x for x in (svg_safe.clean(m) for m in v[:8]) if x][:5]

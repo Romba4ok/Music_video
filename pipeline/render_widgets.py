@@ -144,6 +144,42 @@ def _quote(s):
     return _clip(re.sub(r"\s+", " ", t.replace(" -", " ")).strip(" ,"), 38)
 
 
+KAR_POP, KAR_MAX = "#ff9ec4", 90  # kinetic line: word pop colour on the black bar; longest shown line (chars)
+
+
+def _kinetic(scenes, hook_d, dur):
+    """Big sung line in the top black bar above the card, words appear one by one as they are sung (the reference "Kinolenta" look).
+    Text only from whisper words; a card whose words whisper doubted shows nothing (same rule as `_quote`). -> (html, js list).
+    shortcut: a line over KAR_MAX chars is cut at a word, cards are 8-10 words so it is rare; upgrade = two pages per card."""
+    out, js = [], []
+    real = [x for x in scenes if x["role"] != "outro"]
+    for i, s in enumerate(real):
+        ws = [x for x in s.get("words", []) if re.search(r"\w", x["w"])]
+        if not ws or s.get("low_conf"):
+            continue
+        keep, n = [], 0
+        for x in ws:
+            n += len(x["w"]) + 1
+            if n > KAR_MAX:
+                break
+            keep.append(x)
+        t0 = round(max(s["start"], hook_d), 3)  # the hook question owns the bar for its first ~2 s
+        nxt = real[i + 1]["start"] - .05 if i + 1 < len(real) else dur
+        t1 = round(min(max(nxt, t0 + .6), s["end"] + .6, dur), 3)
+        if t1 - t0 < .5:
+            continue
+        fs = 76 if n <= 28 else 64 if n <= 44 else 54
+        spans = "".join(f'<span id="kw{i}_{j}" class="kw" style="opacity:0">{html.escape(x["w"])}</span>' for j, x in enumerate(keep))
+        out.append(f'<div id="clipK{i}" class="clip" data-start="{t0}" data-duration="{round(t1 - t0, 3)}" data-track-index="6" '
+                   f'style="left:60px;top:200px;width:960px;height:200px;z-index:61"><div id="kc{i}" class="kar" style="font-size:{fs}px">{spans}</div></div>')
+        for j, x in enumerate(keep):
+            t = round(min(max(x["s"], t0), t1 - .3), 3)
+            js.append(f'tl.fromTo("#kw{i}_{j}",{{opacity:0,y:24,scale:.85,color:"{KAR_POP}"}},{{opacity:1,y:0,scale:1,color:"{KAR_POP}",duration:.2,ease:"back.out(2)"}},{t});')
+            js.append(f'tl.to("#kw{i}_{j}",{{color:"#ffffff",duration:.35,ease:"none"}},{round(t + .2, 3)});')
+        js.append(f'tl.to("#kc{i}",{{opacity:0,y:-12,duration:.18,ease:"power2.in"}},{round(t1 - .2, 3)});')
+    return "".join(out), js
+
+
 def _full(artist, title, n):
     """'Artist — Title' when it fits, else just the title: a clipped «9грамм BUGZ feat. Mic Dogg — Та…» hides the song's name."""
     t = f"{artist} — {title}" if artist else title
@@ -213,6 +249,26 @@ def _draw_anim(motion, i, s, d):
     reps = max(1, int(d / 1.1))
     fr, to = {"pulse": ("scale:.97", "scale:1.04"), "sway": ("rotation:-3", "rotation:3"), "drift": ("x:-18", "x:18")}.get(motion, ("y:8", "y:-10"))
     return [f'tl.fromTo("#dr{i}",{{{fr}}},{{{to},duration:1.1,ease:"sine.inOut",yoyo:true,repeat:{reps}}},{s});']
+
+
+def _tweens(tw, ids, i, s, d):
+    """Real object animation for a drawn picture: `tw` = [{id, at (s from card start), dur, from{}, to{}, ease, loop, o:[x,y]}] on the shape ids of the SVG.
+    Re-checked here (`svg_safe.clean_tweens`), a hand-edited spec cannot bypass it. `o` = rotation/scale origin in picture coords.
+    shortcut: tweened shapes must carry no transform attribute (GSAP would read it as the start x/y)."""
+    j, seen = [], set()
+    for t in svg_safe.clean_tweens(tw, ids):
+        at, dur, to = min(t["at"], max(0.0, d - .1)), t["dur"], dict(t["to"])
+        fr = dict(t["from"] or {k: v for k, v in to.items() if k in ("opacity", "scale")})
+        if "o" in t:
+            fr["svgOrigin"] = to["svgOrigin"] = f'{t["o"][0]:g} {t["o"][1]:g}'
+        to.update(duration=round(dur, 3), ease=t["ease"])
+        if t.get("loop"):  # true = there and back (breathing, bobbing); "cycle" = restart from `from` each time (rain, a falling tear)
+            to.update(repeat=max(1, min(40, int((d + .4 - at) / dur))), **({} if t["loop"] == "cycle" else {"yoyo": True}))
+        if t["id"] in seen:
+            to["immediateRender"] = False  # a later tween of the same shape must not reset what the earlier one set
+        seen.add(t["id"])
+        j.append(f'tl.fromTo("#dr{i}_{t["id"]}",{json.dumps(fr)},{json.dumps(to)},{round(s + at, 3)});')
+    return j
 
 
 def _art_anim(key, i, s, d):
@@ -318,7 +374,9 @@ def _body(kind, w, i, s, d, text):
         j.append(f'tl.fromTo("#ch{i}",{{opacity:0,scale:.3,transformOrigin:"50% 50%"}},{{opacity:1,scale:1,duration:.45,ease:"back.out(2)"}},{at(.6)});')
     elif kind == "draw":
         # re-checked here: a hand-edited spec must not bypass the allowlist
-        frames = [m for m in (svg_safe.clean(x) for x in (w.get("frames") or [])[:8]) if m][:5] or [m for m in [svg_safe.clean(w.get("svg"))] if m]
+        anim = isinstance(w.get("tw"), list) and bool(w.get("svg"))  # one picture whose shapes are moved by tweens (not a slideshow of frames)
+        frames = ([m for m in [svg_safe.clean(w.get("svg"), 9000, ids=True)] if m] if anim else
+                  [m for m in (svg_safe.clean(x) for x in (w.get("frames") or [])[:8]) if m][:5] or [m for m in [svg_safe.clean(w.get("svg"))] if m])
         if frames:
             layers = "".join(f'<g id="df{i}_{k}" style="transform-origin:400px 210px">{svg_safe.scope(m, i if len(frames) == 1 else f"{i}f{k}")}</g>'
                              for k, m in enumerate(frames))
@@ -339,7 +397,10 @@ def _body(kind, w, i, s, d, text):
                 if k:  # cross-dissolve into the next picture of the card
                     j.append(f'tl.fromTo("#df{i}_{k}",{{opacity:0}},{{opacity:1,duration:.3,ease:"power1.inOut"}},{t});')
                     j.append(f'tl.to("#df{i}_{k - 1}",{{opacity:0,duration:.3,ease:"power1.inOut"}},{t});')
-            j.extend(_draw_anim(w.get("motion"), i, s, d))
+            if anim:
+                j.extend(_tweens(w["tw"], set(re.findall(rf'id="dr{i}_([\w-]+)"', layers)), i, s, d))
+            else:
+                j.extend(_draw_anim(w.get("motion"), i, s, d))
         else:  # unusable drawing -> a template picture, the video still renders
             return _body("scene", {k: v for k, v in w.items() if k not in ("svg", "kind")}, i, s, d, text)
     elif kind == "versus":
@@ -462,6 +523,7 @@ def build_html(plan, spec, cfg):
     OY = (hgt - SQ) // 2
     dur, intro = plan["duration"], plan.get("intro", 0.0)
     b1, b2, b3, acc, ta, tb = PAL[spec["palette"]]
+    pal_bg = (b1, b2, b3)
     dark = spec.get("theme") == "dark"  # night mood: dark glowing background, light text outside the (still white) cards
     if dark:
         b1, b2, b3 = "#15102b", "#241a4a", "#1a1540"
@@ -688,6 +750,24 @@ def build_html(plan, spec, cfg):
                          f'<path d="M5 1v8M1 5h8" stroke="{cols[q % 5]}" stroke-width="2" stroke-linecap="round"/></svg>')
             js.append(f'tl.fromTo("#bs{i}_{q}",{{opacity:.9,x:0,y:0,rotation:0}},{{opacity:0,x:{int(330 * math.cos(ang))},y:{int(300 * math.sin(ang))},rotation:{90 + q * 20},duration:.8,ease:"power2.out",immediateRender:false}},{s["start"] + .1:.3f});')
     clips.extend(couriers)
+    if cfg.get("alternate_theme"):  # every second card flips light <-> dark (background + the text that sits outside the cards); the end card is back to the base look
+        base = (INK, "#5f5a7c", "rgba(20,20,31,.15)") if not dark else ("#f6f2ff", "#cfc8ee", "rgba(255,255,255,.28)")
+        alt = ("#f6f2ff", "#cfc8ee", "rgba(255,255,255,.28)") if not dark else (INK, "#5f5a7c", "rgba(20,20,31,.15)")
+        flips, cur = [], False
+        for k, sc in enumerate(x for x in plan["scenes"] if x["role"] != "outro"):
+            want = k % 2 == 1
+            if want != cur:
+                flips.append((sc["start"], want))
+                cur = want
+        if cur:
+            flips.append((ost, False))
+        for tf, on in flips:
+            c1, c2, c3 = alt if on else base
+            tf = round(max(0, tf - .1), 3)
+            js.append(f'tl.to("#altbg",{{opacity:{1 if on else 0},duration:.12,ease:"none"}},{tf});')  # a short cut: a slow cross-fade leaves grey-on-grey frames that fail the contrast check
+            tm = round(tf + .06, 3)
+            js.append(f'tl.set(".stat,.ptitle",{{color:"{c1}"}},{tm});tl.set(".tm",{{color:"{c2}"}},{tm});')
+            js.append(f'tl.set(".batt",{{borderColor:"{c1}"}},{tm});tl.set(".batt i,.dot.on",{{backgroundColor:"{c1}"}},{tm});tl.set(".track",{{backgroundColor:"{c3}"}},{tm});')
     hook_d = round(min(dur, max(intro, 1.0) + .9), 3)
     clips.append(
         f'<div id="clipHook" class="clip" data-start="0" data-duration="{hook_d}" data-track-index="5" style="left:60px;top:60px;width:960px;height:300px;z-index:60">'
@@ -695,6 +775,13 @@ def build_html(plan, spec, cfg):
     js.append(f'tl.fromTo("#hook",{{scale:1.3}},{{scale:1,duration:.4,ease:"back.out(1.7)",transformOrigin:"50% 50%"}},0);')  # readable on frame 0 (no fade-in)
     js.append(f'tl.to("#hook",{{opacity:0,scale:.95,duration:.25,ease:"power2.in"}},{round(hook_d - .27, 3)});')
     hook_html = clips.pop()  # the hook lives in the top black bar, outside the stage
+    if cfg.get("kinetic_lyrics"):  # the sung line, word by word, in the same bar right after the hook (off by default: owner decides, see docs/widgets-template.md)
+        kar_html, kar_js = _kinetic(plan["scenes"], hook_d, dur)
+        hook_html += kar_html
+        js += kar_js
+    alt_bg = ("#15102b", "#241a4a", "#1a1540") if not dark else pal_bg
+    alt_layer = (f'<div id="altbg" style="position:absolute;inset:0;opacity:0;background:linear-gradient(160deg,{alt_bg[0]},{alt_bg[1]} 55%,{alt_bg[2]})"></div>'
+                 if cfg.get("alternate_theme") else "")
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width={w}, height={hgt}">
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
@@ -705,6 +792,9 @@ html,body{{margin:0;background:#000;}}
 .bar{{position:absolute;left:0;width:{w}px;background:#000;z-index:50}}
 .hook{{width:960px;height:300px;display:flex;align-items:center;justify-content:center;text-align:center;color:#fff;font-weight:900;line-height:1.08;
  overflow-wrap:anywhere;text-shadow:0 0 18px #ff3d9a,0 0 46px #ff3d9a}}
+.kar{{width:960px;height:200px;display:flex;flex-wrap:wrap;align-content:center;justify-content:center;gap:0 .3em;text-align:center;font-weight:800;line-height:1.12;
+ color:#fff;text-shadow:0 0 22px rgba(255,61,154,.55)}}
+.kw{{display:inline-block}}
 .sp{{position:absolute;opacity:.7}}
 .cr{{position:absolute;left:0;top:0;width:56px;height:56px;border-radius:28px;opacity:0;z-index:5}}
 .clip{{position:absolute}}
@@ -787,7 +877,7 @@ html,body{{margin:0;background:#000;}}
 <body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="{dur}" data-width="{w}" data-height="{hgt}" data-fps="{fps}">
 <div id="stage">
-<div id="bl1" style="position:absolute;left:-150px;top:-100px;width:700px;height:700px;border-radius:350px;background:radial-gradient(circle,rgba(255,150,190,.5),rgba(255,150,190,0) 70%)"></div>
+{alt_layer}<div id="bl1" style="position:absolute;left:-150px;top:-100px;width:700px;height:700px;border-radius:350px;background:radial-gradient(circle,rgba(255,150,190,.5),rgba(255,150,190,0) 70%)"></div>
 <div id="bl2" style="position:absolute;left:520px;top:480px;width:700px;height:700px;border-radius:350px;background:radial-gradient(circle,rgba(150,170,255,.45),rgba(150,170,255,0) 70%)"></div>
 {sparks}
 {chr(10).join(clips)}
