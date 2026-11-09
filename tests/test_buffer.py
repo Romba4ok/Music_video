@@ -429,15 +429,23 @@ def _entry(**kw):
 
 
 class Drive:
-    def __init__(self, fail=(), left=()):
+    ALL = ["ready/2026-11-19/1 A.mp4", "ready/2026-11-19/1 A caption.txt", "ready/2026-11-19/1 A sync.txt", "done/A - T.mp3"]
+
+    def __init__(self, fail=(), left=(), present=None, broken=False):
         self.removed, self.purged, self.fail, self.left = [], [], set(fail), list(left)
+        self.present, self.broken = set(self.ALL if present is None else present), broken
 
     def remove(self, p):
         self.removed.append(p)
-        return p not in self.fail
+        if p in self.fail:
+            return False
+        self.present.discard(p)
+        return True
 
     def ls(self, d):
-        return list(self.left)
+        if self.broken:
+            return None
+        return [p.rpartition("/")[2] for p in self.present if p.rpartition("/")[0] == d] + self.left
 
     def purge(self, d):
         self.purged.append(d)
@@ -485,6 +493,16 @@ def test_failed_delete_is_reported_kept_and_retried():
     assert n == 0 and "caption.txt" in problems[0] and not st["a"].get("drive_deleted") and d.purged == []
     d2 = Drive()
     assert bp.drive_cleanup(st, {}, NOW, d2.remove, d2.ls, d2.purge)[0] == 1 and "drive_note" not in st["a"]
+
+
+def test_files_already_gone_are_not_a_problem_but_a_drive_error_is():
+    d = Drive(present=["ready/2026-11-19/1 A.mp4"])  # caption and sync.txt are not there (sync.txt never exists for a video with sound)
+    st = {"a": _entry()}
+    assert bp.drive_cleanup(st, {}, NOW, d.remove, d.ls, d.purge) == (1, []) and d.removed == ["ready/2026-11-19/1 A.mp4"]
+    broken = Drive(broken=True)
+    st2 = {"a": _entry()}
+    n, problems = bp.drive_cleanup(st2, {}, NOW, broken.remove, broken.ls, broken.purge)
+    assert n == 0 and problems and not st2["a"].get("drive_deleted") and broken.removed == []
 
 
 def test_hosted_copy_goes_as_soon_as_the_post_is_sent_not_after_keep_days():

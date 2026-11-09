@@ -363,7 +363,19 @@ def drive_cleanup(state, bcfg, now, remove=rclone_remove, ls=rclone_ls, purge=rc
     folder (with its report.json) when no video is left in it. The source song in done/ is deleted only with buffer.delete_song_after_sent.
     Notification-only posts (silent videos you publish by hand) and drafts are never touched. Only exact paths recorded for a sent post are deleted.
     A failure is kept in the state (`drive_note`) and retried at the next run. -> (deleted_count, problems)."""
-    n, problems, dirs = 0, [], set()
+    n, problems, dirs, listed = 0, [], set(), {}
+
+    def gone_or_removed(path):
+        """A file that is not in Drive any more (or never existed, like sync.txt of a video with sound) counts as deleted: rclone's exit code for a missing file is not reliable.
+        A listing error is NOT 'gone': the entry stays pending and the step stays red."""
+        folder, _, name = path.rpartition("/")
+        if folder not in listed:
+            listed[folder] = ls(folder)
+        names = listed[folder]
+        if names is None:
+            return False
+        return name not in {x.strip() for x in names} or remove(path)
+
     for e in state.values():
         d = e.get("drive")
         if e.get("status") != "sent" or not d or e.get("drive_deleted") or e.get("notification"):
@@ -371,7 +383,7 @@ def drive_cleanup(state, bcfg, now, remove=rclone_remove, ls=rclone_ls, purge=rc
         paths = [f'{d["dir"]}/{f}' for f in d["files"]]
         if bcfg.get("delete_song_after_sent") and d.get("song"):
             paths.append(f'done/{d["song"]}')
-        bad = [p for p in paths if not remove(p)]
+        bad = [p for p in paths if not gone_or_removed(p)]
         if bad:
             e["drive_note"] = "could not delete: " + ", ".join(bad)[:150]
             problems.append(f'{e.get("file")}: {e["drive_note"]}')
