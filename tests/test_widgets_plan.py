@@ -61,52 +61,6 @@ def test_cards_hold_through_vocal_gaps_but_not_past_the_end():
     assert all(s["end"] <= props["duration"] + 1e-6 for s in props["scenes"])
 
 
-def test_default_apps_notifications_and_banners():
-    p = wp.resolve(_plan(["thermo", "alert", "scene", {"kind": "target", "notify": False}]), SPEC, CFG)
-    assert p["scenes"][0]["notify"]["app"] == wk.DEFAULT_NOTIFY["thermo"]["app"] and p["scenes"][3]["notify"] is None
-    assert p["scenes"][2]["notify"] and p["scenes"][2]["notify"]["glyph"] in ("bubble", "heart", "pin", "lines", "bell")
-    assert p["scenes"][0]["app"] == wk.DEFAULT_APP["thermo"][0] and p["scenes"][0]["icon"] == wk.DEFAULT_APP["thermo"][1]
-
-
-def test_scene_without_art_gets_one_and_never_repeats_inside_a_video():
-    p = wp.resolve(_plan([{"kind": "scene"}] * 6), SPEC, CFG)
-    arts = [s["w"]["art"] for s in p["scenes"] if s["role"] == "lyric"]
-    assert all(a in wp.ART_KEYS for a in arts) and len(set(arts)) == len(arts)
-    assert wp.ARTS[wp._pick("звонит телефон", 0)][0] == "phone"  # meaning first
-    assert wp._pick("звонит телефон", 0, ["phone"]) != wp._pick("звонит телефон", 0)  # ...unless already shown
-
-
-def test_auto_kind_rotates_and_is_capped():
-    line = "ты любишь меня, мы вместе, почему?"
-    assert len({wp._auto(line, "", {}, seed)["kind"] for seed in range(6)}) >= 2
-    assert wp._auto(line, "camera", {"dots": 2, "search": 2}) == {} or wp._auto(line, "pulse", {}, 0)["kind"] != "pulse"
-    assert wp._auto("смерть рядом, любовь", "", {}, 3)["kind"] == "alert"  # danger keeps priority
-    assert wp._auto("Ты ему сперва дала, потом полюбила", "pulse") == {}
-
-
-def test_drawn_card_is_cleaned_scoped_and_falls_back():
-    good = wp.resolve(_plan([{"kind": "draw", "svg": GOOD, "big": "03:32", "chips": ["а", "б"]}]), SPEC, CFG)["scenes"][0]
-    assert good["kind"] == "draw" and 'id="' not in good["w"]["frames"][0] and good["w"]["big"] == "03:32" and good["w"]["anim"] is False
-    anim = wp.resolve(_plan([{"kind": "draw", "svg": '<g id="a"><circle cx="9" cy="9" r="9"/></g><rect id="b" x="1" y="1" width="9" height="9"/>',
-                              "tw": [{"id": "a", "to": {"x": 5}}, {"id": "b", "to": {"y": 5}, "loop": True}, {"id": "nope", "to": {"x": 1}}]}]), SPEC, CFG)["scenes"][0]
-    assert anim["w"]["anim"] and 'id="dr0_a"' in anim["w"]["frames"][0] and len(anim["w"]["tw"]) == 2
-    bad = wp.resolve(_plan([{"kind": "draw", "svg": "<script/>", "art": "flame"}]), SPEC, CFG)["scenes"][0]
-    assert bad["kind"] == "scene" and bad["w"]["art"] == "flame"  # a hand-edited bad drawing never reaches the renderer
-
-
-def test_several_frames_keep_only_safe_ones():
-    sc = wp.resolve(_plan([{"kind": "draw", "frames": [GOOD, GOOD, "<script>1</script>"]}]), SPEC, CFG)["scenes"][0]
-    assert len(sc["w"]["frames"]) == 2
-
-
-def test_different_songs_pick_different_pictures_for_the_same_lines():
-    seen = set()
-    for t in ("A", "BB", "CCC", "DDDD", "EEEEE", "F"):
-        p = wp.resolve(_plan([{"kind": "scene"}] * 2, "ничего особенного тут"), dict(SPEC, song={"artist": "X", "title": t}), CFG)
-        seen.add(tuple(s["w"]["art"] for s in p["scenes"] if s["role"] == "lyric"))
-    assert len(seen) >= 2
-
-
 def test_caption_row_only_when_a_card_has_cap():
     assert wp.resolve(_plan(["scene"]), SPEC, CFG)["hasCap"] is False
     assert wp.resolve(_plan([{"kind": "scene", "cap": "подпись"}]), SPEC, CFG)["hasCap"] is True
@@ -116,11 +70,6 @@ def test_render_rejects_props_without_cards():
     from pipeline import render
     assert render.check_props({"scenes": [], "duration": 5, "ostart": 3})
     assert not render.check_props(wp.resolve(_plan(["scene"]), SPEC, CFG))
-
-
-def test_author_keeps_chips_and_big_for_drawings():
-    w = author.sanitize_widgets([{"lines": [0], "kind": "draw", "frames": [GOOD], "chips": ["а", "б", "в", " "], "big": "×2"}], 1)
-    assert w[0]["chips"] == ["а", "б"] and w[0]["big"] == "×2"
 
 
 def test_cards_snap_to_a_near_beat_and_keep_order():
@@ -144,3 +93,54 @@ def test_motion_check_tells_a_still_picture_from_a_moving_one(tmp_path):
     cards = [{"start": 0.0, "end": 3.0}]
     assert qa.motion_levels(still, cards)[0] < qa.STILL_DIFF < qa.motion_levels(moving, cards)[0]
     assert qa.motion_levels(still, [{"start": 0.0, "end": 0.8}]) == [None]  # too short to tell
+
+
+SCENES = wk.SCENE_KINDS
+
+
+def test_default_apps_notifications_and_banners():
+    p = wp.resolve(_plan(["weather", {"kind": "night", "notify": False}, "deep"]), SPEC, CFG)
+    assert p["scenes"][0]["app"] == wk.DEFAULT_APP["weather"][0] and p["scenes"][0]["icon"] == wk.DEFAULT_APP["weather"][1]
+    assert p["scenes"][1]["notify"] is None  # "notify": false switches the island notification off
+    assert p["scenes"][2]["notify"] and p["scenes"][2]["notify"]["glyph"] in ("bubble", "heart", "pin", "lines", "bell")
+
+
+def test_retired_template_kinds_never_render_a_scene_is_picked_by_meaning():
+    old = ["pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene"]
+    p = wp.resolve(_plan([{"kind": k, "art": "moon", "from": 1} for k in old]), SPEC, CFG)
+    kinds = [s["kind"] for s in p["scenes"] if s["role"] == "lyric"]
+    assert all(k in SCENES for k in kinds) and all(a != b for a, b in zip(kinds, kinds[1:])), kinds
+    assert not any("art" in s["w"] or "from" in s["w"] for s in p["scenes"])  # the old fields are gone with the kinds
+    assert wp.resolve(_plan([{"kind": "pair"}], "тёмная ночь и звёзды"), SPEC, CFG)["scenes"][0]["kind"] == "night"  # meaning first
+
+
+def test_auto_scene_follows_meaning_rotates_and_never_repeats_the_previous():
+    assert wp._auto("ночь и звёзды", "", {}, 0) == "night" and wp._auto("ночь и звёзды", "night", {}, 0) != "night"
+    assert wp._auto("люблю тебя", "", {}, 0) == "duo"
+    assert len({wp._auto("ничего особенного", "", {}, seed) for seed in range(8)}) >= 4  # no keyword: rotates by seed
+    assert wp._auto("ночь", "", {"night": 2}, 0) != "night"  # used twice already
+
+
+def test_drawn_card_is_cleaned_scoped_and_falls_back():
+    good = wp.resolve(_plan([{"kind": "draw", "svg": GOOD, "big": "03:32", "chips": ["а", "б"]}]), SPEC, CFG)["scenes"][0]
+    assert good["kind"] == "draw" and len(good["w"]["frames"]) == 1 and 'id="' not in good["w"]["frames"][0] and good["w"]["big"] == "03:32" and good["w"]["anim"] is False
+    anim = wp.resolve(_plan([{"kind": "draw", "svg": '<g id="a"><circle cx="9" cy="9" r="9"/></g><rect id="b" x="1" y="1" width="9" height="9"/>',
+                              "tw": [{"id": "a", "to": {"x": 5}}, {"id": "b", "to": {"y": 5}, "loop": True}, {"id": "nope", "to": {"x": 1}}]}]), SPEC, CFG)["scenes"][0]
+    assert anim["w"]["anim"] and 'id="dr0_a"' in anim["w"]["frames"][0] and len(anim["w"]["tw"]) == 2
+    bad = wp.resolve(_plan([{"kind": "draw", "svg": "<script/>"}]), SPEC, CFG)["scenes"][0]
+    assert bad["kind"] in SCENES and "svg" not in bad["w"]  # a hand-edited bad drawing never reaches the renderer
+    only_frames = wp.resolve(_plan([{"kind": "draw", "frames": [GOOD, GOOD]}]), SPEC, CFG)["scenes"][0]
+    assert only_frames["kind"] in SCENES  # the frame slideshow is retired
+
+
+def test_different_songs_get_different_scene_orders_for_the_same_lines():
+    seen = set()
+    for t in ("A", "BB", "CCC", "DDDD", "EEEEE", "F"):
+        p = wp.resolve(_plan([{"kind": "pair"}] * 3, "ничего особенного тут"), dict(SPEC, song={"artist": "X", "title": t}), CFG)
+        seen.add(tuple(s["kind"] for s in p["scenes"] if s["role"] == "lyric"))
+    assert len(seen) >= 2
+
+
+def test_author_keeps_chips_and_big_for_drawings():
+    w = author.sanitize_widgets([{"lines": [0], "kind": "draw", "svg": GOOD, "chips": ["а", "б", "в", " "], "big": "×2"}], 1)
+    assert w[0]["chips"] == ["а", "б"] and w[0]["big"] == "×2"

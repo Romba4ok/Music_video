@@ -13,7 +13,7 @@ spec-N.json + analysis-N.json -> script_gen.build_scenes (сценарий) -> w
 ## Что где лежит
 - `pipeline/widgets_plan.py` — выбор вида карточки, приложения, иконки, уведомления, тема, очистка рисунков `draw` (`svg_safe`). Чистая функция, тесты `tests/test_widgets_plan.py`.
 - `remotion/src/widgets/Widgets.tsx` — раскладка: хук, остров, стопка карточек, шарики-связки, уведомления, смена темы, прогресс, финальная заставка.
-- `remotion/src/widgets/Bodies.tsx` — картинка каждого вида (17: scene, counter, search, camera, chat, dots, versus, draw, pair, pulse, route, venn, ring, thermo, alert, target, polaroid) + анимация 15 заготовок `arts.generated.ts`.
+- `remotion/src/widgets/Bodies.tsx` — картинка `draw` (SVG Claude + твины); все остальные виды в `Scenes.tsx`. Старые шаблонные карточки (счётчик, поиск, чат, пара, пульс, маршрут, кольцо и т.д.) удалены 2026-11-09 по решению владельца и не должны возвращаться.
 - `remotion/src/widgets/Scenes.tsx` — 8 анимированных сцен-видов из ролика Т9 (`weather`, `typing`, `bloom`, `duo`, `breath` с 3D-шаром, `deep`, `unlock`, `night`): все объекты двигаются всё время жизни карточки. `shapes.tsx` — общие силуэты.
 - Петля: последние 0.5 с растворяются в первый кадр (`LOOP_S` в `Widgets.tsx`); первая карточка стоит на месте уже на кадре 0, её картинка сдвинута на 0.9 с вперёд (кадр 0 годится как превью). Ярлык серии `config.json → series` под хуком и на финальной карте.
 - `remotion/src/widgets/anim.ts` — изинги и «твины» (то же, что раньше у GSAP): всё считается из времени кадра.
@@ -21,9 +21,9 @@ spec-N.json + analysis-N.json -> script_gen.build_scenes (сценарий) -> w
 - `remotion/src/Sansara.tsx`, `T9.tsx` — ролики, собранные вручную как образцы (светлый и тёмный стили). В пайплайн не входят.
 - `remotion/scripts/transcribe.py` — whisper-строки для ручных роликов.
 
-## Новый вид карточки
-1. Python: добавить имя в `widget_kinds.NEW_KINDS` и таблицы `DEFAULT_APP` / `DEFAULT_NOTIFY` / `DEFAULT_TOAST`, поля описать в `docs/widgets-template.md`.
-2. React: компонент в `Bodies.tsx` (820x340, время `u` — секунды от начала карточки, `d` — её длина), строка в `KINDS`.
+## Новая сцена
+1. Python: добавить имя в `widget_kinds.SCENE_KINDS` и `DEFAULT_APP`, ключевые слова в `widgets_plan.AUTO`, строку в `prompts/widgets.md` и `docs/widgets-template.md`.
+2. React: компонент в `Scenes.tsx` (820x340, время `u` — секунды от начала карточки, `d` — её длина), строка в `SCENES`; все объекты должны двигаться до конца карточки.
 3. Проверить: `npx remotion still Widgets out.png --frame=N --props=work-N/props.json`, склеить кадры (`ffmpeg ... hstack`) и посмотреть; `npx tsc --noEmit`.
 
 ## Установка с нуля

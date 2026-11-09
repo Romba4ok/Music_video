@@ -13,14 +13,11 @@ import tempfile
 
 from . import svg_safe
 from .common import ROOT
-from .widgets_plan import ART_KEYS, KINDS
+from .widgets_plan import KINDS
 
-KEYS = ("kind", "app", "cat", "cap", "icon", "art", "art2", "label", "label2", "from", "to", "unit", "button", "fill", "inf", "query", "result", "sub",
-        "focus", "zoom", "bubble", "msgs", "chosen", "big", "emblem", "pill", "a", "b", "word", "shift", "notify", "toast", "svg", "frames", "motion", "chips", "tw", "who", "status", "err")
-NUM = ("from", "to", "fill", "zoom", "shift")  # `from`/`to` are numbers for most kinds and place names for route
+KEYS = ("kind", "app", "cat", "cap", "icon", "label", "big", "chips", "svg", "tw", "motion", "notify", "toast", "who", "status", "err")
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
-NUMBER_KINDS = ("ring", "dots", "counter")  # their big number reads as a fact: kept only when the line itself holds that number (as digits)
 
 
 STYLES = ("акварель с мягкими разводами", "вырезанная из бумаги аппликация в несколько слоёв", "плоские яркие стикеры",
@@ -29,10 +26,10 @@ STYLES = ("акварель с мягкими разводами", "выреза
 
 
 def variety(rng=None):
-    """A different brief on every call (system random, nothing stored): 6 template kinds are banned and the drawings get another style, so
+    """A different brief on every call (system random, nothing stored): 3 of the animated scene kinds are banned and the drawings get another style, so
     two videos never come out of the same recipe even when the lines look alike. Only banned kinds that exist in the renderer are named."""
     rng = rng or random.SystemRandom()
-    ban = rng.sample([k for k in KINDS if k not in ("draw", "scene")], 6)
+    ban = rng.sample([k for k in KINDS if k != "draw"], 3)
     return (f"Для этого ролика НЕ используй виды: {', '.join(ban)}. Стиль всех рисунков `draw` в этом ролике: {rng.choice(STYLES)}. "
             f"Рисуй узнаваемые предметы из жизни (ключ, чашка, дверь, окно, телефон), а не абстрактные фигуры и не неон. Образы необычные, без очевидных (сердце, часы, дождь).")
 
@@ -96,13 +93,9 @@ def _notify(n):
     return {"app": _s(n.get("app", ""), 18), "text": _s(n["text"], 36), "icon": icon}
 
 
-def _quotes_number(o, text):
-    return str(o.get("to", "")).split(".")[0] in re.findall(r"\d+", text)
-
-
 def sanitize_widgets(widgets, n_lines, texts=None):
     """Keep only known keys/kinds, clip text, clamp indices, drop overlaps. Returns a list safe for spec["widgets"].
-    `texts` (the lyric lines) switches on the invented-number check for NUMBER_KINDS; the dropped card's lines fall to the auto pictures."""
+    `texts` is kept for callers; a dropped card's lines get an automatic scene."""
     out, used, split = [], set(), {}
     for w in widgets if isinstance(widgets, list) else []:
         if not isinstance(w, dict):
@@ -130,11 +123,6 @@ def sanitize_widgets(widgets, n_lines, texts=None):
                     tw = svg_safe.clean_tweens(v, set(re.findall(r'id="([\w-]+)"', o["svg"])), 30)
                     if len(tw) >= 2:
                         o[k] = tw
-            elif k == "frames":  # a drawn card is a short film: up to 5 pictures that follow each other about once a second
-                if w["kind"] == "draw" and isinstance(v, list):
-                    fr = [x for x in (svg_safe.clean(m) for m in v[:8]) if x][:5]
-                    if fr:
-                        o[k] = fr
             elif k == "chips":  # up to two short phrase pills on a drawn card
                 ch = [_s(c, 22) for c in v if isinstance(c, str) and c.strip()][:2] if isinstance(v, list) else []
                 if ch:
@@ -142,33 +130,13 @@ def sanitize_widgets(widgets, n_lines, texts=None):
             elif k == "motion":
                 if v in svg_safe.MOTIONS:
                     o[k] = v
-            elif k == "msgs":
-                ms = [{"from": "me" if m.get("from") == "me" else "her", "text": _s(m.get("text", ""), 46)} for m in v if isinstance(m, dict)][:3]
-                if ms:
-                    o[k] = ms
-            elif k in ("art", "art2"):
-                if v in ART_KEYS:
-                    o[k] = v
             elif k == "icon":
                 if HEX.match(str(v)):
                     o[k] = v
-            elif k == "emblem":
-                if v in ("crown", "heart", "star"):
-                    o[k] = v
-            elif k == "inf":
-                o[k] = bool(v)
-            elif k in NUM and not (w["kind"] == "route" and k in ("from", "to")):
-                try:
-                    x = float(v)
-                    o[k] = x if k in ("fill", "zoom") or x != int(x) else int(x)  # thermo needs 36.6, pulse needs 70
-                except (TypeError, ValueError, OverflowError):
-                    pass
             else:
                 o[k] = _s(v)
-        if texts and o["kind"] in NUMBER_KINDS and not _quotes_number(o, " ".join(texts[i] for i in ln)):
-            continue
-        if o["kind"] == "draw" and "svg" not in o and "frames" not in o:
-            o["kind"] = "scene"  # the drawing was missing or not allowed: show a template picture instead
+        if o["kind"] == "draw" and "svg" not in o:
+            continue  # the drawing was missing or not allowed: the lines get a scene picked by meaning (widgets_plan)
         if half is None:
             used |= set(ln)
         else:

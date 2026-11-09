@@ -178,8 +178,8 @@ NEW_ARTS = ("phone", "window", "flame", "lock", "bird", "wave")
 def test_author_prompt_asks_for_other_kinds_than_the_rest_of_the_day():
     from pipeline import author
     lines = [{"start": 0, "end": 3, "text": "строка", "words": []}]
-    p = author.build_prompt({"artist": "A", "title": "T", "avoid_kinds": ["pair", "pulse"]}, lines, CFG)
-    assert "pair, pulse" in p and "{{AVOID}}" not in p and "flame" in p
+    p = author.build_prompt({"artist": "A", "title": "T", "avoid_kinds": ["weather", "night"]}, lines, CFG)
+    assert "weather, night" in p and "{{AVOID}}" not in p
     assert "{{AVOID}}" not in author.build_prompt({"artist": "A", "title": "T"}, lines, CFG)
 
 
@@ -233,16 +233,15 @@ def test_scope_prefixes_gradient_ids_per_card():
     assert 'id="dr7_lg"' in m and "url(#dr7_lg)" in m and 'id="lg"' not in m
 
 
-def test_author_turns_a_bad_drawing_into_a_template_picture_and_keeps_good_ones():
+def test_author_drops_a_bad_drawing_and_keeps_good_ones():
     ws = author.sanitize_widgets([
-        {"lines": [0], "kind": "draw", "svg": GOOD, "motion": "sway", "art": "moon", "app": "Заметки"},
-        {"lines": [1], "kind": "draw", "svg": "<script>1</script>", "art": "lock"},
+        {"lines": [0], "kind": "draw", "svg": GOOD, "motion": "sway", "app": "Заметки"},
+        {"lines": [1], "kind": "draw", "svg": "<script>1</script>"},
         {"lines": [2], "kind": "draw"},
         {"lines": [3], "kind": "draw", "svg": GOOD, "motion": "explode"}], 4)
     assert ws[0]["kind"] == "draw" and ws[0]["motion"] == "sway" and "<circle" in ws[0]["svg"]
-    assert ws[1] == {"lines": [1], "kind": "scene", "art": "lock"}  # nothing unsafe survives; the line still gets a picture
-    assert ws[2]["kind"] == "scene"
-    assert ws[3]["kind"] == "draw" and "motion" not in ws[3]  # unknown motion ignored (renderer defaults to float)
+    assert [w["lines"] for w in ws] == [[0], [3]]  # nothing unsafe survives; lines 1 and 2 get a scene picked by meaning (widgets_plan)
+    assert ws[1]["kind"] == "draw" and "motion" not in ws[1]  # unknown motion ignored (renderer defaults to float)
 
 
 def test_prompt_explains_drawing_and_wants_no_text_in_pictures():
@@ -328,8 +327,8 @@ def test_a_long_line_can_be_two_cards_and_empty_lines_join_a_neighbour():
     lines = [{"start": 0, "end": 4, "text": "a", "words": words(0, 8)}, {"start": 4.5, "end": 5.5, "text": "у-у", "words": words(4.5, 2)},
              {"start": 6, "end": 8, "text": "b", "words": words(6, 4)}]
     an = {"lines": lines, "fragment": {"first": 0, "last": 2, "start": 0.0, "end": 8.0}, "beats": []}
-    ws = author.sanitize_widgets([{"lines": [0], "kind": "scene", "art": "moon", "half": 0}, {"lines": [0], "kind": "scene", "art": "city", "half": 1},
-                                  {"lines": [1, 2], "kind": "scene", "art": "eye"}, {"lines": [0], "kind": "scene", "art": "rain"}], 3)
+    ws = author.sanitize_widgets([{"lines": [0], "kind": "night", "half": 0}, {"lines": [0], "kind": "deep", "half": 1},
+                                  {"lines": [1, 2], "kind": "bloom"}, {"lines": [0], "kind": "weather"}], 3)
     assert [(w["lines"], w.get("half")) for w in ws] == [([0], 0), ([0], 1), ([1, 2], None)]  # the 4th overlaps line 0: dropped
     sc = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}}, widgets=ws)["scenes"]
     assert [len(s["words"]) for s in sc if s["role"] == "lyric"] == [4, 4, 6]  # 8 words split 4+4; the vocalise joins the last card

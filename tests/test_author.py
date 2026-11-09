@@ -8,10 +8,10 @@ AN = {"lines": LINES, "fragment": {"first": 0, "last": 7, "start": 0.0, "end": 3
 SPEC = {"id": "x", "caption": "c", "hashtags": ["#a", "#b", "#c"]}
 ENTRY = {"artist": "A", "title": "T"}
 GOOD = {"trim": {"from": 1, "to": 5}, "hook": "кто виноват?", "caption": "Про любовь. Сделано с ИИ",
-        "widgets": [{"lines": [0, 1], "kind": "pair", "a": "Я", "b": "Ты", "notify": {"app": "Сообщения", "text": "Новое", "icon": "#34c759"}},
-                    {"lines": [2], "kind": "thermo", "from": 36.6, "to": 38.9},
+        "widgets": [{"lines": [0, 1], "kind": "weather", "label": "Ты", "notify": {"app": "Сообщения", "text": "Новое", "icon": "#34c759"}},
+                    {"lines": [2], "kind": "typing", "status": "не в сети"},
                     {"lines": [3], "kind": "hack", "label": "x"},       # unknown kind: dropped
-                    {"lines": [3, 4], "kind": "ring", "from": 0, "to": 100, "icon": "javascript:1"},  # no number in the lines: dropped
+                    {"lines": [3, 4], "kind": "pair", "a": "Я", "icon": "javascript:1"},  # a retired template kind: dropped
                     {"lines": [4], "kind": "draw", "svg": '<rect width="800" height="420" fill="#eef"/><circle cx="400" cy="210" r="80" fill="#f49"/>', "icon": "javascript:1"}]}  # bad icon dropped
 
 
@@ -37,14 +37,14 @@ def test_good_answer_trims_and_sanitizes(monkeypatch):
     assert st.startswith("claude") and "trim 1..5" in st
     assert (an["fragment"]["first"], an["fragment"]["last"]) == (1, 5) and an["fragment"]["length"] == 19.5
     kinds = [w["kind"] for w in sp["widgets"]]
-    assert kinds == ["pair", "thermo", "draw"] and "icon" not in sp["widgets"][2] and sp["hook"] == "КТО ВИНОВАТ?" and sp["caption"].endswith("ИИ")  # the ring quotes 100 %, the lines do not: dropped
-    assert sp["widgets"][1]["from"] == 36.6
+    assert kinds == ["weather", "typing", "draw"] and "icon" not in sp["widgets"][2] and sp["hook"] == "КТО ВИНОВАТ?" and sp["caption"].endswith("ИИ")  # retired kinds and unknown ones are dropped, the lines do not: dropped
+    assert sp["widgets"][1]["status"] == "не в сети"
     assert run(dict(GOOD, about="про дружбу и путь с нуля", mood="dark"))[1]["about"].startswith("про дружбу") is True
 
 
 def test_a_template_as_the_last_card_is_rejected_and_retried(monkeypatch):
     monkeypatch.delenv("VYBEX_NO_AUTHOR")
-    bad = dict(GOOD, widgets=GOOD["widgets"][:2])  # ends with thermo
+    bad = dict(GOOD, widgets=GOOD["widgets"][:2])  # ends with typing
     answers, prompts = [json.dumps(bad), json.dumps(GOOD)], []
     def runner(p, c):
         prompts.append(p)
@@ -53,12 +53,11 @@ def test_a_template_as_the_last_card_is_rejected_and_retried(monkeypatch):
     assert st.startswith("claude") and "attempt 2" in st and len(prompts) == 2
 
 
-def test_number_cards_need_the_number_in_the_line():
-    w = [{"lines": [0], "kind": "ring", "from": 0, "to": 92}, {"lines": [1], "kind": "dots", "from": 8000, "to": 1},
-         {"lines": [2], "kind": "counter", "from": 5000, "to": 0}]
-    assert [x["kind"] for x in author.sanitize_widgets(w, 3, ["Хранилище почти полно", "один из миллиардов", "осталось 0 монет"])] == ["counter"]
-    assert [x["kind"] for x in author.sanitize_widgets(w, 3, ["заряд 92%", "всего 1 человек", "ноль"])] == ["ring", "dots"]
-    assert len(author.sanitize_widgets(w, 3)) == 3  # no texts given: no check (hand-written specs)
+def test_retired_template_kinds_never_survive():
+    old = ("pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene")
+    w = [{"lines": [i], "kind": k, "from": 1, "to": 2, "art": "moon"} for i, k in enumerate(old)]
+    assert author.sanitize_widgets(w, len(old)) == []  # the owner removed them: they must not appear (2026-11-09)
+    assert [x["kind"] for x in author.sanitize_widgets([{"lines": [0], "kind": "deep"}, {"lines": [1], "kind": "night", "big": "x"}], 2)] == ["deep", "night"]
 
 
 def test_bad_trim_is_ignored_and_failures_fall_back(monkeypatch):
@@ -90,5 +89,5 @@ def test_a_bad_first_answer_is_retried(monkeypatch):
 
 def test_every_brief_is_different_and_bans_real_kinds():
     briefs = {author.variety() for _ in range(12)}
-    assert all(len(b.split("виды:")[1].split(".")[0].split(",")) == 6 for b in briefs)
+    assert all(len(b.split("виды:")[1].split(".")[0].split(",")) == 3 for b in briefs)
     assert len(briefs) > 6 and all("НЕ используй виды:" in b and "draw" not in b.split("виды:")[1].split(".")[0] for b in briefs)

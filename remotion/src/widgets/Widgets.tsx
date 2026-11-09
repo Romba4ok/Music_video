@@ -13,7 +13,6 @@ const INK = "#14141f";
 const COLS = ["#ff6b9d", "#6aa8ff", "#7be0a8", "#ffc15a", "#b58cff"];
 const CARD_TOP = 180, CARD_ZOOM = 1.04, CAP_H = 84, CARD_H = 478;
 const BODY_X = 130;
-const ANCH: Record<string, [number, number]> = { pair: [410, 150], pulse: [190, 110], route: [660, 60], venn: [410, 170], ring: [410, 150], thermo: [241, 272], alert: [410, 190], target: [410, 170], polaroid: [165, 150], versus: [200, 130], counter: [170, 170], search: [410, 45], camera: [410, 170], chat: [200, 170], dots: [410, 88], scene: [410, 170], draw: [410, 170] };
 const GLYPH: Record<string, string> = {
   bubble: "M4 5h16v11H9l-5 4z", heart: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z",
   pin: "M12 2a7 7 0 0 0-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z", lines: "M5 6h14M5 12h14M5 18h9", bell: "M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0z",
@@ -128,7 +127,7 @@ const Frame: React.FC<WidgetsProps & { t: number }> = (p) => {
 
   // glowing orbs that fly from the previous card's key object to this card's
   const bodyY = CARD_TOP + 30 + 64 + 14, cy0 = CARD_TOP + (cardH + 40) / 2;
-  const anchor = (k: string) => { const [ax, ay] = ANCH[k] ?? [410, 170]; return [540 + (BODY_X + ax - 540) * CARD_ZOOM, cy0 + (bodyY + ay - cy0) * CARD_ZOOM] as const; };
+  const anchor = (_k: string) => { const [ax, ay] = [410, 170]; return [540 + (BODY_X + ax - 540) * CARD_ZOOM, cy0 + (bodyY + ay - cy0) * CARD_ZOOM] as const; };
   const orbs = lyric.flatMap((s, i) => {
     const prev = lyric[i - 1];
     if (!prev) return [];
