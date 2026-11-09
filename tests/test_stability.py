@@ -247,7 +247,8 @@ def test_author_turns_a_bad_drawing_into_a_template_picture_and_keeps_good_ones(
 
 def test_prompt_explains_drawing_and_wants_no_text_in_pictures():
     p = author.build_prompt({"artist": "A", "title": "T"}, [{"start": 0, "end": 3, "text": "строка", "words": []}], CFG)
-    assert "draw: frames" in p and "text/tspan" in p and "0 0 800 420" in p
+    assert "draw: svg" in p and "tw (" in p and "text/tspan" in p and "0 0 800 420" in p
+    assert "больше не используй" in p  # the slideshow of frames is retired: objects move by tweens
 
 
 def test_window_with_a_long_instrumental_pause_is_avoided():
