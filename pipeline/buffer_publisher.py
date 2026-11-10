@@ -136,10 +136,9 @@ class Buffer:
         return self.gql(q)["post"]
 
     def create_post(self, channel_id, text, url, mode, due=None, notify=False):
-        inp = {"text": text, "channelId": channel_id, "schedulingType": "notification" if notify else "automatic", "aiAssisted": True,
+        inp = {"text": text, "channelId": channel_id, "schedulingType": "notification" if notify else "automatic",
                "mode": "shareNow" if mode == "now" else ("customScheduled" if due else "addToQueue"),
-               "assets": [{"video": {"url": url, "metadata": {"thumbnailOffset": 2000}}}],
-               "metadata": {"tiktok": {"isAiGenerated": True}}}
+               "assets": [{"video": {"url": url, "metadata": {"thumbnailOffset": 2000}}}]}
         if due:
             inp["dueAt"] = due.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         if mode == "draft":

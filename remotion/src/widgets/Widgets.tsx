@@ -161,7 +161,6 @@ const Frame: React.FC<WidgetsProps & { t: number }> = (p) => {
           <div style={{ textAlign: "center", fontWeight: 900, lineHeight: 1.05, letterSpacing: -1, color: TXF, textShadow: TXS, fontSize: fs2 }}>{p.title.slice(0, 24).toUpperCase()}</div>
           <div style={{ textAlign: "center", fontWeight: 700, fontSize: 40, color: TX2 }}>{p.artist.slice(0, 30)}</div>
           <div style={{ textAlign: "center", fontWeight: 900, fontSize: 46, color: TX }}>{p.credit}</div>
-          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 44, marginTop: 20, maxWidth: 900, color: TX2 }}>{p.hook}</div>
         </div>
         {Array.from({ length: 14 }, (_, q) => { const a = (q / 14) * 6.283, k = pr(t, t0 + 0.2, 0.9, "power2.out"); return t >= t0 + 0.2 ? <Cross key={q} x={525 + 110 * Math.cos(a) + 260 * Math.cos(a) * k} y={425 + 110 * Math.sin(a) + 260 * Math.sin(a) * k} s={30} col={COLS[q % 5]} o={0.95 * (1 - k)} rot={(120 + q * 17) * k} /> : null; })}
       </>
@@ -170,7 +169,6 @@ const Frame: React.FC<WidgetsProps & { t: number }> = (p) => {
   const orbOut = os ? (() => { const a = pr(t, os.start - 0.2, 0.3, "power2.out"), b = pr(t, os.start + 0.15, 0.35, "power2.out"); return t >= os.start - 0.2 && t < os.start + 0.5 ? <div style={{ position: "absolute", left: 480, top: 403, width: 120, height: 120, borderRadius: 60, zIndex: 5, opacity: a * (1 - b), transform: `scale(${(0.2 + 0.8 * a) * (1 + 1.8 * b)})`, background: `radial-gradient(circle,#fff 0 20%,${ta} 42%,rgba(255,255,255,0) 72%)` }} /> : null; })() : null;
 
   // ---------- hook ----------
-  const hfs = p.hook.length <= 14 ? 124 : p.hook.length <= 24 ? 100 : 80;
   const hookOp = 1 - pr(t, p.hookD - 0.27, 0.25, "power2.in");
   const hookSc = 1.12 - 0.12 * pr(t, 0, 0.4, "back.out(1.7)");
 
@@ -233,8 +231,7 @@ const Frame: React.FC<WidgetsProps & { t: number }> = (p) => {
       </div>
       <div style={{ position: "absolute", left: 60, top: 60, width: 960, height: 300, zIndex: 60, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", color: "#fff", fontWeight: 900, lineHeight: 1.08, overflowWrap: "anywhere",
         opacity: t < p.hookD ? hookOp : 0, transform: `scale(${hookSc})` }}>
-        <div style={{ fontSize: hfs, textShadow: "0 0 18px #ff3d9a,0 0 46px #ff3d9a" }}>{p.hook}</div>
-        {p.series && <div style={{ marginTop: 18, fontSize: 34, fontWeight: 700, letterSpacing: 4, color: "#ff9ec4", textTransform: "uppercase" }}>{p.series}</div>}
+        {p.series && <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 4, color: "#ff9ec4", textTransform: "uppercase" }}>{p.series}</div>}
       </div>
     </AbsoluteFill>
   );

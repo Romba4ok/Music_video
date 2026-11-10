@@ -21,7 +21,7 @@
 - No cover art, artist photos, logos, clip screenshots.
 
 ## AI label
-TikTok requires labelling AI-generated content. Direct Post API: `is_aigc: true` always. Inbox upload cannot carry it: the owner turns on "AI-generated content" in the app when posting; `publish.yml` writes this reminder into the run summary.
+Since 2026-11-10 the owner publishes WITHOUT the AI label: no text note, no `aiAssisted`/`isAiGenerated` flags, no reminders in `caption.txt`, the steps or the run summary. This is the owner's decision; TikTok's rules still ask to label realistic AI-generated content, and the risk is the owner's. The spec field `ai_label` stays as an internal marker.
 
 ## Publishing (official only)
 - `inbox`: `POST /v2/post/publish/inbox/video/init/` (scope `video.upload`, no audit). Video lands in the creator's inbox; owner finishes the post. Caption is not sendable via this API: it is stored in the Release as `caption.txt` and shown in the run summary. Limit: 5 pending shares / 24 h.

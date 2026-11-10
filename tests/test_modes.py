@@ -183,7 +183,7 @@ def test_pack_names_and_caption(tmp_path):
     batch.pack(tmp_path, 1, spec, "tiktok", tmp_path / "ready")
     names = sorted(p.name for p in (tmp_path / "ready").iterdir())
     assert names == ["1 AB - T caption.txt", "1 AB - T sync.txt", "1 AB - T.mp4"]
-    assert "Создано ИИ" in (tmp_path / "ready" / "1 AB - T caption.txt").read_text(encoding="utf-8")
+    assert "Создано ИИ" not in (tmp_path / "ready" / "1 AB - T caption.txt").read_text(encoding="utf-8")
 
 
 

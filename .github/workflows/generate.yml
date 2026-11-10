@@ -121,4 +121,4 @@ jobs:
           done
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
           [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
-          echo "Results: Drive/ready/$D. AI label: turn on 'AI-generated content' in TikTok when posting." >> "$GITHUB_STEP_SUMMARY"
+          echo "Results: Drive/ready/$D." >> "$GITHUB_STEP_SUMMARY"

@@ -329,7 +329,7 @@ def test_create_post_payloads():
     b.create_post("CH", "t", "https://x/v.mp4", "queue", due)
     q = calls[-1]["variables"]["input"]
     assert q["mode"] == "customScheduled" and q["dueAt"] == "2026-11-20T07:00:00.000Z" and q["schedulingType"] == "automatic"
-    assert q["aiAssisted"] is True and q["metadata"]["tiktok"]["isAiGenerated"] is True and "saveToDraft" not in q
+    assert "aiAssisted" not in q and "metadata" not in q and "saveToDraft" not in q  # no AI flag (owner's decision, 2026-11-10)
     b.create_post("CH", "t", "https://x/v.mp4", "queue", due, notify=True)
     assert calls[-1]["variables"]["input"]["schedulingType"] == "notification"
     b.create_post("CH", "t", "https://x/v.mp4", "draft")
@@ -541,7 +541,7 @@ def test_create_post_payload_for_now_is_sharenow_without_a_time():
     b.create_post("CH", "t", "https://x/v.mp4", "now")
     q = calls[-1]["variables"]["input"]
     assert q["mode"] == "shareNow" and "dueAt" not in q and "saveToDraft" not in q and q["schedulingType"] == "automatic"
-    assert q["aiAssisted"] is True and q["metadata"]["tiktok"]["isAiGenerated"] is True
+    assert "aiAssisted" not in q and "metadata" not in q
 
 
 def test_a_now_post_that_stays_unsent_for_an_hour_is_a_problem():

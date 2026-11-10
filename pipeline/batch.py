@@ -80,8 +80,7 @@ def pack(out, n, spec, mode, ready):
     base = re.sub(r'[\\/:*?"<>|]+', "",f"{n} {name}").strip()
     ready.mkdir(parents=True, exist_ok=True)
     shutil.copy2(out / f"work-{n}" / "final.mp4", ready / f"{base}.mp4")
-    text = (spec["caption"] + "\n" + " ".join(spec["hashtags"])
-            + "\n\nВключите в TikTok метку «Создано ИИ» (AI-generated content).")
+    text = (spec["caption"] + "\n" + " ".join(spec["hashtags"]))
     (ready / f"{base} caption.txt").write_text(text, encoding="utf-8")
     if (out / f"sync-{n}.txt").exists():
         shutil.copy2(out / f"sync-{n}.txt", ready / f"{base} sync.txt")
@@ -222,6 +221,8 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             themes.append(spec.get("theme", "light"))
             (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
+            if spec.get("scenario"):  # the card script the video is built from, readable without opening the spec
+                (out / f"scenario-{n}.txt").write_text(author_mod.render_scenario(spec["scenario"]), encoding="utf-8")
             sid, lines, video = st["build"](out, n, cfg)
             rec["stages"]["render"] = "ok" if video else "FAIL"
             rec["qa"] = [f"{s} {nm} {d}".strip() for s, nm, d in lines if s != "PASS"]

@@ -28,7 +28,6 @@ def sync_info(spec, plan):
         f"Нажмите «Добавить звук» → найдите официальный трек «{song['artist']} — {song['title']}».",
         f"В обрезке звука поставьте начало на {fmt_ts(t)} (фрагмент песни {plan['duration'] - 2.5:.0f} с, ролик {plan['duration']} с).",
         "Громкость оригинального звука ролика не нужна: в файле звука нет.",
-        "Включите метку «Создано ИИ» перед публикацией.",
     ]
     return {"song": song, "sound_start_sec": t, "sound_start": fmt_ts(t), "video_duration": plan["duration"],
             "beats_first": plan["beats"][:8], "steps": steps}
