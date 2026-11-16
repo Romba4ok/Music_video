@@ -166,20 +166,55 @@ def test_draft_has_no_time_and_does_not_look_at_the_queue(tmp_path):
     assert (out / "ready" / "1 Баста - Песня 1.mp4").exists()
 
 
-def test_silent_video_is_published_automatically_by_default(tmp_path):
+def test_silent_video_is_held_not_sent_by_default(tmp_path):
     out, buf = make_out(tmp_path, n=1, mode="tiktok"), FakeBuf()
+    st = FakeStore()
+    res = run(out, tmp_path, QUEUE, buf, st)
+    assert res[0]["state"] == "awaiting_audio" and not buf.calls and not st.up   # nothing uploaded, nothing created
+
+
+def test_silent_policy_publish_and_notify_are_opt_in(tmp_path):
+    for policy, state, notify in (("publish", "scheduled", False), ("notify", "notify", True)):
+        out, buf = make_out(tmp_path / policy, n=1, mode="tiktok"), FakeBuf()
+        cfg = {**CFG, "buffer": {**CFG["buffer"], "silent": policy}}
+        res = run(out, tmp_path / policy, QUEUE, buf, cfg=cfg)
+        assert res[0]["state"] == state and buf.calls[0]["notify"] is notify
+
+
+def test_a_video_whose_audio_check_fails_waits_for_audio_and_is_not_sent(tmp_path, monkeypatch):
+    def bad(p, audio, b):
+        raise bp.AudioMissing("в файле нет звуковой дорожки")
+    monkeypatch.setattr(bp, "check_media", bad)
+    out, buf = make_out(tmp_path, n=1), FakeBuf()
     res = run(out, tmp_path, QUEUE, buf)
-    assert res[0]["state"] == "scheduled" and buf.calls[0]["notify"] is False   # no phone needed
-    out2, buf2 = make_out(tmp_path / "n", n=1, mode="tiktok"), FakeBuf()
-    now = run(out2, tmp_path / "n", dict(ENV, VYBEX_BUFFER="now"), buf2)
-    assert now[0]["state"] == "posting" and buf2.calls[0]["notify"] is False
+    assert res[0]["state"] == "awaiting_audio" and "звуковой" in res[0]["detail"] and not buf.calls
 
 
-def test_silent_video_becomes_a_notification_only_when_configured(tmp_path):
-    out, buf = make_out(tmp_path, n=1, mode="tiktok"), FakeBuf()
-    cfg = {**CFG, "buffer": {**CFG["buffer"], "silent_notify": True}}
-    res = run(out, tmp_path, QUEUE, buf, cfg=cfg)
-    assert res[0]["state"] == "notify" and buf.calls[0]["notify"] is True
+def _clip(path, audio):
+    """A real 1080x1920 H.264 clip (4 s) with the requested sound: aac | mp3 | silence | none | short (1.5 s aac)."""
+    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=1080x1920:r=10:d=4"]
+    if audio == "aac":
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac"]
+    elif audio == "mp3":
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "libmp3lame"]
+    elif audio == "silence":
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=4", "-c:a", "aac"]
+    elif audio == "short":
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=1.5", "-c:a", "aac"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(cmd, check=True)
+    return path
+
+
+import subprocess  # noqa: E402
+
+
+def test_verify_audio_on_real_files(tmp_path):
+    ok = bp.verify_audio(_clip(tmp_path / "ok.mp4", "aac"), 4.0)
+    assert ok["codec"] == "aac" and ok["rate"] > 0 and ok["peak_db"] > -50
+    for kind, why in (("none", "нет звуковой"), ("mp3", "нужен AAC"), ("silence", "тишина"), ("short", "рассинхрон")):
+        with pytest.raises(bp.AudioMissing, match=why):
+            bp.verify_audio(_clip(tmp_path / f"{kind}.mp4", kind), 4.0)
 
 
 # ---------- rights, dedup, errors ----------
@@ -364,7 +399,7 @@ def test_scheduled_reads_every_page():
 # ---------- media and url checks ----------
 
 def info(codec="h264", w=1080, h=1920, audio=True, dur="30.0"):
-    st = [{"codec_type": "video", "codec_name": codec, "width": w, "height": h}] + ([{"codec_type": "audio"}] if audio else [])
+    st = [{"codec_type": "video", "codec_name": codec, "width": w, "height": h}] + ([{"codec_type": "audio", "codec_name": "aac", "duration": dur, "sample_rate": "44100", "channels": 2}] if audio else [])
     return {"streams": st, "format": {"duration": dur}}
 
 
@@ -372,16 +407,18 @@ def media(monkeypatch, tmp_path, i, audio=True, decode_err=""):
     monkeypatch.undo()  # drop the autouse stub of check_media
     import pipeline.qa as qa
     monkeypatch.setattr(qa, "probe", lambda p: i)
-    monkeypatch.setattr(bp.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1 if decode_err else 0, stderr=decode_err))
+    monkeypatch.setattr(bp.subprocess, "run", lambda cmd, **k: SimpleNamespace(returncode=0, stderr="max_volume: -3.0 dB") if "volumedetect" in cmd
+                        else SimpleNamespace(returncode=1 if decode_err else 0, stderr=decode_err))
     f = tmp_path / "v.mp4"
     f.write_bytes(b"x")
     return bp.check_media(f, audio, {})
 
 
 def test_check_media(monkeypatch, tmp_path):
-    assert media(monkeypatch, tmp_path, info(), True) == {"duration": 30.0, "audio": True}
-    assert media(monkeypatch, tmp_path, info(audio=False), False)["audio"] is False  # silent TikTok-sound video is fine
-    for bad, why in ((info(codec="hevc"), "h264"), (info(w=720, h=1280), "1080x1920"), (info(audio=False), "audio"), (info(dur="1.0"), "duration")):
+    ok = media(monkeypatch, tmp_path, info(), True)
+    assert ok["duration"] == 30.0 and ok["audio"] is True and ok["audio_info"]["codec"] == "aac" and ok["audio_info"]["peak_db"] == -3.0
+    assert media(monkeypatch, tmp_path, info(audio=False), False)["audio"] is False  # a silent video passes the file checks (the hold policy decides before)
+    for bad, why in ((info(codec="hevc"), "h264"), (info(w=720, h=1280), "1080x1920"), (info(audio=False), "звуков"), (info(dur="1.0"), "duration")):
         with pytest.raises(bp.BufferError, match=why):
             media(monkeypatch, tmp_path, bad, True)
     with pytest.raises(bp.BufferError, match="decode"):

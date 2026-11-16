@@ -4,8 +4,8 @@ Per video: rights gate -> media checks (ffprobe + full decode) -> already sent? 
 folder (Buffer needs a public HTTPS URL) -> check the URL like Buffer will -> createPost -> state + report.json.
 Modes (VYBEX_BUFFER env/variable, else config buffer.mode; anything unknown = off):
   off    nothing        plan   read-only: checks, free slots, nothing uploaded or created
-  draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos (mode tiktok) are published like any
-                               other; only with config buffer.silent_notify=true they get a *notification* (reminder to add the sound by hand)
+  draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos (mode tiktok) are NOT sent (state awaiting_audio)
+                               unless config buffer.silent = publish | notify (reminder to add the sound by hand)
   now    shareNow: the post is published to the account right away (no slot, no queue); nothing is spread over the day
 The Buffer posting schedule cannot be written through the API, so slots are set per post (`dueAt`, UTC). Existing drafts are never edited.
 Hosted files must live until Buffer posts them (it fetches at publish time) and are deleted by age. The MP4 in ready/ is never touched.
@@ -222,6 +222,33 @@ def check_file(path, bcfg):
         raise BufferError(f"file is {mb:.0f} MB, limit {lim} MB")
 
 
+class AudioMissing(BufferError):
+    """The video has no usable sound track: it is held back (state awaiting_audio), never sent silent."""
+
+
+def verify_audio(path, video_dur, max_diff=0.5, min_peak_db=-50.0):
+    """ffprobe/ffmpeg proof that the MP4 really carries sound: an AAC stream, as long as the video (+-max_diff s), not silence. -> info dict.
+    Raises AudioMissing with the reason."""
+    from .qa import probe
+    a = next((s for s in probe(path).get("streams", []) if s.get("codec_type") == "audio"), None)
+    if not a:
+        raise AudioMissing("в файле нет звуковой дорожки")
+    if a.get("codec_name") != "aac":
+        raise AudioMissing(f"звук {a.get('codec_name')}, нужен AAC")
+    try:
+        adur = float(a.get("duration") or 0)
+    except ValueError:
+        adur = 0.0
+    if abs(adur - video_dur) > max_diff:
+        raise AudioMissing(f"звук {adur:.2f} с, видео {video_dur:.2f} с: рассинхрон больше {max_diff} с")
+    r = subprocess.run(["ffmpeg", "-v", "info", "-i", str(path), "-vn", "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    m = re.search(r"max_volume:\s*(-?[\d.]+) dB", r.stderr or "")
+    peak = float(m.group(1)) if m else None
+    if peak is None or peak < min_peak_db:
+        raise AudioMissing(f"дорожка есть, но это тишина (пик {peak} dB)")
+    return {"codec": "aac", "rate": int(a.get("sample_rate") or 0), "channels": a.get("channels"), "duration": round(adur, 2), "peak_db": peak}
+
+
 def check_media(path, expect_audio, bcfg):
     """MP4 + H.264 + 1080x1920 (+ audio when the video must carry music) + sane duration + decodes without errors. -> info dict."""
     from .qa import probe
@@ -235,15 +262,14 @@ def check_media(path, expect_audio, bcfg):
     if (v.get("width"), v.get("height")) != (1080, 1920):
         raise BufferError(f"resolution {v.get('width')}x{v.get('height')}, expected 1080x1920")
     has_audio = any(s.get("codec_type") == "audio" for s in info["streams"])
-    if expect_audio and not has_audio:
-        raise BufferError("video must have music but has no audio stream")
     dur = float(info.get("format", {}).get("duration", 0))
+    audio = verify_audio(path, dur) if expect_audio else None
     if not 3 <= dur <= bcfg.get("max_sec", 180):
         raise BufferError(f"duration {dur:.1f}s outside 3..{bcfg.get('max_sec', 180)}s")
     r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"], capture_output=True, text=True)
     if r.returncode or r.stderr.strip():
         raise BufferError("file does not decode cleanly: " + r.stderr.strip()[:120])
-    return {"duration": round(dur, 1), "audio": has_audio}
+    return {"duration": round(dur, 1), "audio": has_audio, "audio_info": audio}
 
 
 def rights_ok(rec, env):
@@ -405,7 +431,10 @@ def publish_one(c, mp4, caption, rec, silent):
         ok, why = rights_ok(rec, c.env)
         if not ok:
             return {"state": "refused", "detail": why}
-        notify = bool(silent and c.bcfg.get("silent_notify", False))  # default: a silent video is published by Buffer itself, no phone needed
+        policy = c.bcfg.get("silent", "hold")  # silent video (mode tiktok): hold = never sent, wait for audio | publish | notify (reminder, you add the sound by hand)
+        if silent and policy == "hold":
+            return {"state": "awaiting_audio", "detail": "ролик без звука не уходит в TikTok: ждёт аудиофайл (mode auto)"}
+        notify = bool(silent and policy == "notify")
         info = check_media(mp4, not silent, c.bcfg)
         sha = sha256(mp4)
         old = c.state.get(sha)
@@ -440,6 +469,8 @@ def publish_one(c, mp4, caption, rec, silent):
         if due:
             res["due"] = due.astimezone(c.tz).isoformat()
         return res
+    except AudioMissing as e:  # the file has no proper sound: nothing is sent, the video waits for audio
+        return {"state": "awaiting_audio", "detail": str(e)[:200]}
     except (BufferError, OSError, KeyError, ValueError) as e:
         return {"state": "error", "detail": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -507,6 +538,8 @@ def summary(out):
     lines = [f"- buffer: {b.get('state', 'n/a')} {b.get('detail', '')} slots={','.join(b.get('slots', []))} {b.get('timezone', '')}".rstrip()]
     lines += [f"  - PROBLEM: {p}" for p in b.get("problems", [])]
     lines += [f"  - {s['song']}: {s['buffer']['state']} {s['buffer'].get('due', '')} {s['buffer'].get('detail', '')}".rstrip() for s in rep["songs"] if s.get("buffer")]
+    lines += [f"  - {s['song']}: ожидает аудио (fetch: {s.get('stages', {}).get('fetch', 'n/a')})" for s in rep["songs"]
+              if not s.get("buffer") and (s.get("stages") or {}).get("fetch") not in (None, "ok")]
     return lines
 
 
