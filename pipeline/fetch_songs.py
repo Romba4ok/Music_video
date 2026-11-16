@@ -72,6 +72,8 @@ def taste_artists(st):
 
 def fits(artist, title, taste):
     """Russian-language chart song: Cyrillic in artist or title, or an artist the owner already uses (Latin spelling, e.g. Guf, Jah Khalib)."""
+    if re.search(r"без слов|instrumental|инструментал|минус|karaoke|караоке|remix|ремикс|cover|кавер", f"{artist} {title}".lower()):
+        return False  # no vocals to read lyrics from, or another recording of someone else's song
     return bool(re.search("[а-яё]", f"{artist}{title}".lower())) or re.sub(r"[\W_]+", "", artist.lower()) in taste
 
 
@@ -167,7 +169,7 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
             k = key(c.artist, c.title)
             if len(got) >= need:
                 break
-            if k in seen or not re.search("[а-яё]", f"{c.artist}{c.title}".lower()) or not (100 <= (c.sec or 180) <= 420) or not license_ok(c.license or c.license_url, cfg["licenses_allowed"]):
+            if k in seen or not fits(c.artist, c.title, frozenset()) or not (100 <= (c.sec or 180) <= 420) or not license_ok(c.license or c.license_url, cfg["licenses_allowed"]):
                 continue
             seen.add(k)
             w = {"artist": c.artist, "title": c.title, "sec": c.sec}

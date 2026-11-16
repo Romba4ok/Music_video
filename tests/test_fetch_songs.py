@@ -174,3 +174,10 @@ def test_discover_takes_russian_titled_allowed_license_tracks_only(tmp_path, mon
     got = fetch_songs.discover(cfg, tmp_path / "o", set(), 5, find=lambda q: pool, sleep=lambda s: None, day=0)
     assert [w["title"] for w, _, _ in got] == ["Лесная песня", "Известная"]
     assert fetch_songs.discover(cfg, tmp_path / "o2", {fetch_songs.key("aniarky", "Лесная песня")}, 1, find=lambda q: pool[:1], sleep=lambda s: None) == []   # already known
+
+
+def test_fits_rejects_instrumental_remix_and_cover_even_for_owners_artist():
+    assert not fetch_songs.fits("ВОЛАНД", "ПЕСНЯ БЕЗ СЛОВ", set())
+    assert not fetch_songs.fits("Guf", "Дно (Remix)", {"guf"})
+    assert not fetch_songs.fits("Кто-то", "Таю (кавер)", set())
+    assert fetch_songs.fits("Кто-то", "Песня", set())
