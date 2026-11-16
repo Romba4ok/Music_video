@@ -98,8 +98,14 @@ def refragment(analysis, cfg, popular_line=""):
 
 
 def beats(path):
+    import subprocess
+
     import librosa
-    y, sr = librosa.load(str(path), sr=22050, mono=True)
+    import numpy as np
+    # ffmpeg decodes (it is already required by check_audio): librosa's own mp3 reader (libsndfile) gives up on files with >64 KB of junk before the
+    # first frame, e.g. a big cover in the ID3 tag, and then the whole song fails after check_audio had accepted it
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "22050", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    y, sr = np.frombuffer(pcm, dtype=np.float32), 22050
     tempo, bt = librosa.beat.beat_track(y=y, sr=sr)
     return {"bpm": round(float(getattr(tempo, "item", lambda: tempo)()), 1), "beats": [round(float(t), 3) for t in
             librosa.frames_to_time(bt, sr=sr)], "duration": round(len(y) / sr, 2)}

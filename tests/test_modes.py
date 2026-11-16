@@ -74,7 +74,7 @@ def test_local_source_lists_video_and_marks_rights(tmp_path):
 # ---- queue / log parsing
 def test_parse_queue_ignores_comments_and_blank_fields():
     real = batch.parse_queue((ROOT / "accounts/main/queue.md").read_text(encoding="utf-8"))
-    assert real and real[0]["artist"] == "Max Korzh" and all(e["title"] for e in real)
+    assert all(e["artist"] and e["title"] for e in real)  # the live file may be empty: used rows are removed by mark_published
     q = batch.parse_queue("# x\n<!-- a | b | c -->\nA | B | line | f.mp3 |\n | | \nC |\n")
     assert q == [{"artist": "A", "title": "B", "popular_line": "line", "audio_file": "f.mp3"}]
 
