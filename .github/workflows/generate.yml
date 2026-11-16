@@ -28,7 +28,15 @@ env:
   RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
   VYBEX_OWNER_DECLARES_RIGHTS: "1"  # files you put in Drive/audio = your declaration that you may use them
 jobs:
+  # Step 1: top Drive/audio up to 3 songs (queue, Russian chart songs, open Russian tracks). Step 2 below needs whatever is there, even if this step found nothing.
+  fetch:
+    uses: ./.github/workflows/fetch-songs.yml
+    with:
+      target: "3"
+    secrets: inherit
   generate:
+    needs: fetch
+    if: ${{ !cancelled() }}  # a failed or empty download must not stop the videos
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

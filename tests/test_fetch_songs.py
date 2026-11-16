@@ -87,7 +87,7 @@ def test_fetch_one_skips_when_nothing_matches_and_marks_dead_source(tmp_path):
 def run_args(tmp_path, queue="", **kw):
     q = tmp_path / "queue.md"
     q.write_text(queue, encoding="utf-8")
-    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, **kw)
+    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, **kw)
 
 
 def test_run_journal_dedup_and_retry_window(tmp_path, monkeypatch):
@@ -162,3 +162,15 @@ def test_prune_lists_misfit_downloads_and_forgets_them(tmp_path):
     assert (tmp_path / "prune.txt").read_text(encoding="utf-8").splitlines() == ["Taylor Swift - The Fate of Ophelia.mp3", "Taylor Swift - The Fate of Ophelia.mp3.license.json"]
     back = fetch_songs.load_memory(f)
     assert len(back["done"]) == 1 and len(back["skipped"]) == 1   # Таю stays, Swift is remembered as skipped (never fetched again)
+
+
+def test_discover_takes_russian_titled_allowed_license_tracks_only(tmp_path, monkeypatch):
+    cfg = {"licenses_allowed": ["cc0", "pdm", "by"], "sources": {"order": ["local", "openverse"]}}
+    monkeypatch.setattr(fetch_songs.download, "download", lambda c, d, cfg=None, http=None: mkfile(tmp_path))
+    monkeypatch.setattr(fetch_songs.download, "check_audio", lambda p, **kw: (p, []))
+    pool = [cand(title="Лесная песня", artist="aniarky", sec=281), cand(title="Forest song", artist="aniarky"),      # not Russian
+            cand(title="Песня про ТВ", artist="Vint", lic="https://creativecommons.org/licenses/by-sa/4.0/"),         # SA refused
+            cand(title="Короткая", artist="Кто-то", sec=40), cand(title="Известная", artist="Y", sec=200)]            # too short / one-letter artist ok
+    got = fetch_songs.discover(cfg, tmp_path / "o", set(), 5, find=lambda q: pool, sleep=lambda s: None, day=0)
+    assert [w["title"] for w, _, _ in got] == ["Лесная песня", "Известная"]
+    assert fetch_songs.discover(cfg, tmp_path / "o2", {fetch_songs.key("aniarky", "Лесная песня")}, 1, find=lambda q: pool[:1], sleep=lambda s: None) == []   # already known

@@ -121,7 +121,8 @@ def matches(artist, title, c, sec=0):
     ct, ca = _words(c.title), _words(c.artist)
     if not tw or not set(tw) <= set(ct):
         return False
-    if not any(w in ca + ct for w in _words(artist) if len(w) > 2):
+    aw = [w for w in _words(artist) if len(w) > 2]  # a one/two-letter artist name cannot be checked
+    if aw and not any(w in ca + ct for w in aw):
         return False
     if any(b in ca + ct and b not in _words(title) for b in _BAD):
         return False

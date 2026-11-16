@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import download, song_ideas, sources
 from .batch import parse_queue
-from .common import ROOT, load_config, parse_name, safe_err
+from .common import ROOT, license_ok, load_config, parse_name, safe_err
 
 RETRY_DAYS = 14  # a skipped song is searched again after this long (new uploads appear)
 MIN_SEC, MAX_SEC = 90, 600  # full composition: not a 30 s preview, not a mix
@@ -146,7 +146,39 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
     return None, last
 
 
-def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep):
+DISCOVER_QUERIES = ["песня", "любовь", "город", "ночь", "душа", "дорога", "осень", "мечта", "сердце", "время"]
+
+
+def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
+    """Fallback when the queue and the chart gave too little: Russian-titled full tracks under an allowed license found by browsing Openverse.
+    Mostly independent artists, NOT what is in the chart. -> [(wanted dict, file name, detail)]. `seen` = keys already known (mutated)."""
+    find = find or (lambda q: sources._openverse(q, 20, cfg, {}))
+    day = time.gmtime().tm_yday if day is None else day
+    got, dead = [], set()
+    for i in range(len(DISCOVER_QUERIES)):
+        if len(got) >= need:
+            break
+        try:
+            cands = find(DISCOVER_QUERIES[(day + i) % len(DISCOVER_QUERIES)])
+        except Exception as e:
+            print("songs: discover failed:", safe_err(e), file=sys.stderr)
+            continue
+        for c in cands:
+            k = key(c.artist, c.title)
+            if len(got) >= need:
+                break
+            if k in seen or not re.search("[а-яё]", f"{c.artist}{c.title}".lower()) or not (100 <= (c.sec or 180) <= 420) or not license_ok(c.license or c.license_url, cfg["licenses_allowed"]):
+                continue
+            seen.add(k)
+            w = {"artist": c.artist, "title": c.title, "sec": c.sec}
+            name, why = fetch_one(w, cfg, out, {"openverse": lambda q, n, cf, e, c=c: [c]}, dead=dead)
+            if name:
+                got.append((w, name, why))
+        sleep(1)
+    return got
+
+
+def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None):
     cfg = cfg or load_config()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -189,6 +221,12 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep):
         else:
             state["skipped"][k] = {"status": "skipped", "date": today, "song": f'{w["artist"]} - {w["title"]}', "file": "", "detail": why}
         sleep(1)  # be polite to the free APIs
+    if a.discover and len(got) < a.max:
+        seen = set(have) | set(state["done"]) | set(state["skipped"])
+        for w, name, why in discover(cfg, out, seen, a.max - len(got), find, sleep):
+            k = key(w["artist"], w["title"])
+            state["done"][k] = {"status": "downloaded", "date": today, "song": f'{w["artist"]} - {w["title"]}', "file": name, "detail": "discover " + why}
+            got.append(name)
     shutil.rmtree(out / "_tmp", ignore_errors=True)
     save_memory(state_f, state)
     print(json.dumps({"downloaded": got, "tried": tries, "skipped_total": len(state["skipped"])}, ensure_ascii=False))
@@ -200,6 +238,7 @@ def main(argv):
     ap.add_argument("--out", default="out/fetched")
     ap.add_argument("--have-file", help="names already in Drive (audio/ and done/), one per line")
     ap.add_argument("--state", default="out/songs-memory.md", help="memory (md table): used, downloaded and skipped songs")
+    ap.add_argument("--discover", action="store_true", help="if the queue/chart gave fewer than --max songs: browse open sources for Russian-titled tracks (indie, not chart)")
     ap.add_argument("--prune", help="write to this file the names of earlier downloads that do not fit (not Russian / not your artists), forget them in the memory, search nothing")
     ap.add_argument("--record-used", help="text file of processed audio names (Drive/done): only add them to the memory as `used`, search nothing")
     ap.add_argument("--queue", default=str(ROOT / "accounts" / "main" / "queue.md"))
