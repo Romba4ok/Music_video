@@ -22,3 +22,4 @@ done < out/audio-now.txt
 if [ -s out/done.txt ]; then rclone delete gd:done; fi
 if echo "$ROOT_LS" | grep -qx 'ready/'; then rclone rmdirs gd:ready --leave-root; fi   # only EMPTY date folders (sent videos are deleted by buffer drive-cleanup; unsent drafts stay)
 echo "Drive cleaned: $(wc -l < out/done.txt) processed songs remembered in Drive/state/songs.md, Drive/done emptied, empty Drive/ready folders removed. Songs still waiting in Drive/audio: $(grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' out/audio-now.txt || true)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+{ echo "Drive now:"; for d in audio done ready state; do echo "- $d/: $(rclone lsf "gd:$d" 2>/dev/null | grep -v '/$' | grep -vc '\.license\.json$' || true) files"; done; echo "Songs waiting in audio/:"; rclone lsf gd:audio | grep -v '\.license\.json$' | sed 's/^/  /'; } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

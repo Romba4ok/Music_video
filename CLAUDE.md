@@ -13,7 +13,7 @@ Automatic, free tools only, official publishing APIs only. One account now (`acc
 
 ## Honesty rules
 - Lyrics on cards come from the whisper transcript of the supplied audio, never from memory. Never invent facts about songs or artists. Low-confidence words are flagged, not guessed.
-- Audio is added by the pipeline from files the owner puts in `accounts/main/audio/`. Never fetch/download songs yourself.
+- Audio is added by the pipeline from files the owner puts in `accounts/main/audio/`, or downloaded by the pipeline job `python -m pipeline songs` from sources that allow it (CC0/PD/CC-BY, see `docs/rights.md`). You never fetch/download songs yourself, and you never ask the owner for a rights contract: the standing declaration is `VYBEX_OWNER_DECLARES_RIGHTS=1` in the workflow env.
 - Show the song's most popular line (chorus hook), a fragment of 20–35 s (length follows the meaning: ends where the thought ends, never mid-sentence), never the whole song.
 - Never claim a check passed if the script did not run it.
 - If a resource is not legally available, say so; do not substitute invented data.

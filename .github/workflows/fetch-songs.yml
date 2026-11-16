@@ -74,3 +74,4 @@ jobs:
           rclone copyto out/songs-memory.md gd:state/songs.md   # after the audio upload: a failed upload is retried tomorrow
           tail -n 1 out/songs.json | python -c "import json,sys;r=json.load(sys.stdin);print('Downloaded today: %d of %d searched; skipped in memory: %d' % (len(r['downloaded']), r['tried'], r['skipped_total']));[print('- '+f) for f in r['downloaded']]" >> "$GITHUB_STEP_SUMMARY"
           echo "Memory: Drive/state/songs.md" >> "$GITHUB_STEP_SUMMARY"
+          { echo "Drive/audio now:"; rclone lsf gd:audio | grep -v '\.license\.json$' | sed 's/^/- /'; } | tee -a "$GITHUB_STEP_SUMMARY"
