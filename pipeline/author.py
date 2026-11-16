@@ -16,7 +16,7 @@ from . import svg_safe
 from .common import ROOT
 from .widgets_plan import KINDS
 
-KEYS = ("kind", "app", "cat", "cap", "icon", "label", "big", "chips", "svg", "tw", "motion", "notify", "toast", "who", "status", "err")
+KEYS = ("kind", "app", "cat", "cap", "icon", "big", "chips", "svg", "tw", "motion", "notify", "toast")
 TEXT_LIMIT = 40
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -27,11 +27,10 @@ STYLES = ("акварель с мягкими разводами", "выреза
 
 
 def variety(rng=None):
-    """A different brief on every call (system random, nothing stored): 3 of the animated scene kinds are banned and the drawings get another style, so
-    two videos never come out of the same recipe even when the lines look alike. Only banned kinds that exist in the renderer are named."""
+    """A different brief on every call (system random, nothing stored): the drawings get another style, so two videos never come out of the same
+    recipe even when the lines look alike."""
     rng = rng or random.SystemRandom()
-    ban = rng.sample([k for k in KINDS if k != "draw"], 3)
-    return (f"Для этого ролика НЕ используй виды: {', '.join(ban)}. Стиль всех рисунков `draw` в этом ролике: {rng.choice(STYLES)}. "
+    return (f"Стиль всех рисунков `draw` в этом ролике: {rng.choice(STYLES)}. "
             f"Рисуй узнаваемые предметы из жизни (ключ, чашка, дверь, окно, телефон), а не абстрактные фигуры и не неон. Образы необычные, без очевидных (сердце, часы, дождь).")
 
 
@@ -68,9 +67,7 @@ def _fill(name, entry, lines, cfg, song_lines, scenario=""):
     tpl = (ROOT / "prompts" / name).read_text(encoding="utf-8")
     txt = "\n".join(f'{i} | {l["start"]:.1f}–{l["end"]:.1f} | {l["text"]}' for i, l in enumerate(lines))
     lo, hi = cfg["min_len"], cfg["max_len"] + cfg.get("close_overrun", 8.0)  # the fragment may run over max_len to finish its thought
-    avoid = entry.get("avoid_kinds") or []  # kinds the other videos of today's batch already use: ask for different ones
-    note = f"Другие ролики сегодня уже используют: {', '.join(avoid)}. Выбирай другие виды и другие art." if avoid else ""
-    note = (note + " " + variety()).strip()
+    note = variety()
     rt = entry.get("recent_themes") or []
     theme = (f"Последние ролики были {'тёмные' if rt[-1] == 'dark' else 'светлые'}: если песня позволяет, сделай этот {'светлым' if rt[-1] == 'dark' else 'тёмным'} для разнообразия."
              if len(rt) >= 2 and rt[-1] == rt[-2] else "")
@@ -141,8 +138,6 @@ def check_scenario(res, fr, lines, cfg):
         cards.append(o)
     if len(cards) < 3:
         raise ValueError("the scenario has fewer than 3 usable cards")
-    if cards[-1]["kind"] != "draw":  # the last picture answers the hook: a template there reads as a stock ending
-        raise ValueError(f"the last card must be a drawing, got {cards[-1]['kind']}")
     arc = [_s(x, 90) for x in res.get("arc") or [] if isinstance(x, str) and x.strip()][:3]
     if not res.get("about") or len(arc) < 2:
         raise ValueError("the scenario needs `about` and an `arc` of the whole song")
@@ -224,8 +219,6 @@ def apply_result(res, analysis, spec, cfg):
     wd = sanitize_widgets(res.get("widgets"), n, [l["text"] for l in lines[a:b + 1]])
     if not wd:
         raise ValueError("no valid widgets in the answer")
-    if wd[-1]["kind"] != "draw":  # the last picture answers the hook: a template there reads as a stock ending (the author gets a fresh attempt)
-        raise ValueError(f"the last card must be a drawing, got {wd[-1]['kind']}")
     new_spec = dict(spec, widgets=wd)
     hook = _s(res.get("hook", ""), 36).upper()
     if hook:

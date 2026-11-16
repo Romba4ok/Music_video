@@ -167,7 +167,6 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     out.mkdir(parents=True, exist_ok=True)
     past = recall_cards(acc)  # earlier runs count too: the same recipe on the next day looks the same
     report, done = [], 0
-    day_kinds = {k for r in past for k in r.get("kinds", []) if k not in ("draw", "scene")}
     themes = [r.get("theme", "light") for r in past]
     for entry in queue:
         if done >= count:
@@ -212,12 +211,10 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
                 continue
             rel = str(Path(audio).resolve().relative_to(root)).replace("\\", "/") if mode == "auto" else None
             spec = autospec(entry, n, date, recent, cfg, mode, rel, trend_tags)
-            entry["avoid_kinds"] = sorted(day_kinds)
             entry["recent_themes"] = themes
             analysis, spec, rec["stages"]["author"] = st["author"](entry, analysis, spec, cfg)
             if rec["stages"]["author"].startswith("fallback"):  # keyword cards look alike: never let that pass unnoticed
                 rec["note"] = "Claude author failed, this video uses keyword cards: " + rec["stages"]["author"]
-            day_kinds |= {w.get("kind") for w in spec.get("widgets") or [] if w.get("kind")}  # Claude writes cards/hook; falls back to auto
             themes.append(spec.get("theme", "light"))
             (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
             (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")

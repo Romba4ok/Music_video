@@ -95,30 +95,22 @@ def test_motion_check_tells_a_still_picture_from_a_moving_one(tmp_path):
     assert qa.motion_levels(still, [{"start": 0.0, "end": 0.8}]) == [None]  # too short to tell
 
 
-SCENES = wk.SCENE_KINDS
-
-
 def test_default_apps_notifications_and_banners():
-    p = wp.resolve(_plan(["weather", {"kind": "night", "notify": False}, "deep"]), SPEC, CFG)
-    assert p["scenes"][0]["app"] == wk.DEFAULT_APP["weather"][0] and p["scenes"][0]["icon"] == wk.DEFAULT_APP["weather"][1]
+    d = {"kind": "draw", "svg": GOOD}
+    p = wp.resolve(_plan([d, dict(d, notify=False), d]), SPEC, CFG)
+    assert p["scenes"][0]["app"] == wk.DEFAULT_APP["draw"][0] and p["scenes"][0]["icon"] == wk.DEFAULT_APP["draw"][1]
     assert p["scenes"][1]["notify"] is None  # "notify": false switches the island notification off
     assert p["scenes"][2]["notify"] and p["scenes"][2]["notify"]["glyph"] in ("bubble", "heart", "pin", "lines", "bell")
 
 
-def test_retired_template_kinds_never_render_a_scene_is_picked_by_meaning():
-    old = ["pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene"]
-    p = wp.resolve(_plan([{"kind": k, "art": "moon", "from": 1} for k in old]), SPEC, CFG)
-    kinds = [s["kind"] for s in p["scenes"] if s["role"] == "lyric"]
-    assert all(k in SCENES for k in kinds) and all(a != b for a, b in zip(kinds, kinds[1:])), kinds
-    assert not any("art" in s["w"] or "from" in s["w"] for s in p["scenes"])  # the old fields are gone with the kinds
-    assert wp.resolve(_plan([{"kind": "pair"}], "тёмная ночь и звёзды"), SPEC, CFG)["scenes"][0]["kind"] == "night"  # meaning first
-
-
-def test_auto_scene_follows_meaning_rotates_and_never_repeats_the_previous():
-    assert wp._auto("ночь и звёзды", "", {}, 0) == "night" and wp._auto("ночь и звёзды", "night", {}, 0) != "night"
-    assert wp._auto("люблю тебя", "", {}, 0) == "duo"
-    assert len({wp._auto("ничего особенного", "", {}, seed) for seed in range(8)}) >= 4  # no keyword: rotates by seed
-    assert wp._auto("ночь", "", {"night": 2}, 0) != "night"  # used twice already
+def test_retired_kinds_never_render_the_line_gets_a_plain_panel_not_a_scene():
+    old = ["pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene",
+           "weather", "typing", "bloom", "duo", "breath", "deep", "unlock", "night"]
+    p = wp.resolve(_plan([{"kind": k, "art": "moon", "from": 1, "label": "x"} for k in old], "тёмная ночь и звёзды"), SPEC, CFG)
+    lyric = [s for s in p["scenes"] if s["role"] == "lyric"]
+    assert len(lyric) == len(old) and all(s["kind"] == "draw" and "frames" not in s["w"] for s in lyric)  # no ready-made picture, even by meaning
+    assert not any(k in s["w"] for s in p["scenes"] for k in ("art", "from", "label"))  # the old fields are gone with the kinds
+    assert wp.KINDS == ("draw",) and not hasattr(wk, "SCENE_KINDS") and not hasattr(wp, "_auto")
 
 
 def test_drawn_card_is_cleaned_scoped_and_falls_back():
@@ -128,17 +120,9 @@ def test_drawn_card_is_cleaned_scoped_and_falls_back():
                               "tw": [{"id": "a", "to": {"x": 5}}, {"id": "b", "to": {"y": 5}, "loop": True}, {"id": "nope", "to": {"x": 1}}]}]), SPEC, CFG)["scenes"][0]
     assert anim["w"]["anim"] and 'id="dr0_a"' in anim["w"]["frames"][0] and len(anim["w"]["tw"]) == 2
     bad = wp.resolve(_plan([{"kind": "draw", "svg": "<script/>"}]), SPEC, CFG)["scenes"][0]
-    assert bad["kind"] in SCENES and "svg" not in bad["w"]  # a hand-edited bad drawing never reaches the renderer
+    assert bad["kind"] == "draw" and "svg" not in bad["w"] and "frames" not in bad["w"]  # a hand-edited bad drawing never reaches the renderer
     only_frames = wp.resolve(_plan([{"kind": "draw", "frames": [GOOD, GOOD]}]), SPEC, CFG)["scenes"][0]
-    assert only_frames["kind"] in SCENES  # the frame slideshow is retired
-
-
-def test_different_songs_get_different_scene_orders_for_the_same_lines():
-    seen = set()
-    for t in ("A", "BB", "CCC", "DDDD", "EEEEE", "F"):
-        p = wp.resolve(_plan([{"kind": "pair"}] * 3, "ничего особенного тут"), dict(SPEC, song={"artist": "X", "title": t}), CFG)
-        seen.add(tuple(s["kind"] for s in p["scenes"] if s["role"] == "lyric"))
-    assert len(seen) >= 2
+    assert only_frames["kind"] == "draw" and "frames" not in only_frames["w"]  # the frame slideshow is retired
 
 
 def test_author_keeps_chips_and_big_for_drawings():

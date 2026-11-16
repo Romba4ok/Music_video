@@ -1,10 +1,9 @@
 """Resolve the scenario (script_gen output + spec) into the props of the Remotion composition `Widgets` (remotion/src/widgets).
 
-Pure function, no randomness beyond a per-song seed: kinds, default apps/icons/notifications and the keyword fallback are decided here;
+Pure function, no randomness: default apps/icons/notifications are decided here; a line without a usable drawing gets a plain panel, never a ready-made scene;
 the React side only draws. Drawn pictures (kind "draw") are re-cleaned here, so a hand-edited spec cannot bypass `svg_safe`.
 """
 import re
-import zlib
 
 from . import svg_safe
 from . import widget_kinds as wk
@@ -16,20 +15,10 @@ PAL = {  # spec palette -> (bg1, bg2, bg3, accent, title gradient a, b)
     "contrast": ("#e0fff3", "#e0f0ff", "#efe6ff", "#14956f", "#1fb98a", "#3b8bff"),
 }
 DARK_BG = ("#15102b", "#241a4a", "#1a1540")
-KINDS = ("draw",) + wk.SCENE_KINDS  # draw = a picture Claude drew as SVG with tweens; the rest are the animated scenes
+KINDS = ("draw",)  # a picture Claude drew as SVG with tweens: the only kind (no ready-made scenes or cards, owner's decision 2026-11-16)
 HOLD_MAX = 4.5  # s a card stays after its line ends when the vocal pauses (analysis refuses windows with a longer pause: whisper.max_gap_sec)
 MAX_CARDS = 16
 
-AUTO = [  # (stems, kind): meaning-by-keyword choice for a line that has no (usable) widget; first unused match wins
-    (("дожд", "слез", "плак", "солнц", "свет", "радост", "грусть", "печал", "холод"), "weather"),
-    (("звон", "телефон", "сообщ", "написал", "ответ", "молч", "жду", "ждал", "трубк"), "typing"),
-    (("весн", "начал", "рост", "расти", "надежд", "цвет", "утр", "рассвет", "лучик"), "bloom"),
-    (("вместе", "двое", "рядом", "тобой", "мы ", "люблю", "любим", "любов"), "duo"),
-    (("дыш", "вдох", "выдох", "сердц", "волн", "дрож"), "breath"),
-    (("тон", "вод", "глубин", "море", "утону", "падаю", "дно"), "deep"),
-    (("откр", "свобод", "замок", "тайн", "секрет", "не бо", "храбр", "решил"), "unlock"),
-    (("ноч", "сон", "звезд", "мечт", "темн", "луна", "небо", "грёз", "грез"), "night"),
-]
 INK = "#14141f"
 WORST_BG = "#feadbe"  # saturated pink: the brightest thing a title text can sit on (an accent orb over the card)
 
@@ -67,17 +56,6 @@ def readable(col, bg=WORST_BG, need=3.1):
     return INK
 
 
-def _auto(text, prev, count=None, seed=0):
-    """A scene kind for a line without a usable widget: the first keyword match that is not the previous card and not used twice yet; with no
-    match the scenes rotate by `seed`, so different videos (and different lines) do not all land on the same picture."""
-    t, count = text.lower(), count or {}
-    hit = [k for stems, k in AUTO if k != prev and count.get(k, 0) < 2 and any(x in t for x in stems)]
-    if hit:
-        return hit[0]
-    pool = [k for k in wk.SCENE_KINDS if k != prev and count.get(k, 0) == 0] or [k for k in wk.SCENE_KINDS if k != prev]
-    return pool[seed % len(pool)]
-
-
 def _glyph(bn):
     a = (str(bn.get("app", "")) + str(bn.get("glyph", ""))).lower()
     return ("bubble" if any(x in a for x in ("сообщ", "чат", "бесед")) else "heart" if any(x in a for x in ("здоров", "пульс", "фото", "любов"))
@@ -85,7 +63,7 @@ def _glyph(bn):
 
 
 def _draw(w, i):
-    """(widget for the renderer, ok). A drawn picture is re-cleaned here; an unusable one is replaced by a scene picked by meaning."""
+    """(widget for the renderer, ok). A drawn picture is re-cleaned here; an unusable one is left without a picture (the renderer shows a plain panel)."""
     svg = svg_safe.clean(w.get("svg"), 9000, ids=isinstance(w.get("tw"), list))
     if not svg:
         return {k: v for k, v in w.items() if k not in ("svg", "tw")}, False
@@ -124,10 +102,9 @@ def resolve(plan, spec, cfg):
     song = spec["song"]
     artist, title = song.get("artist", ""), song["title"]
     handle = (cfg.get("handle") or "vybex").strip().lstrip("@")
-    seed = zlib.crc32(f"{artist}{title}".encode("utf-8")) % 997  # per song: two songs do not pick the same pictures for the same kind of line
     raw = snap_to_beats(plan["scenes"], plan.get("beats", []), cfg.get("beat_snap_sec", 0.18))
     n_cards = min(MAX_CARDS, sum(1 for x in raw if x["role"] != "outro")) or 1
-    kind_count, prev, out = {}, "", []
+    out = []
     for k, s in enumerate(raw):
         nxt = raw[k + 1]["start"] if k + 1 < len(raw) else s["end"]
         end = max(s["end"], min(nxt, s["end"] + HOLD_MAX, dur))  # hold the card through vocal gaps: never an empty stage
@@ -136,17 +113,12 @@ def resolve(plan, spec, cfg):
         i = len(out)
         if s["role"] == "outro":
             out.append({"i": i, "role": "outro", "start": s["start"], "end": end, "text": "", "kind": "draw", "w": {}, "app": "", "icon": "#000000", "cat": "", "notify": None})
-            prev = "outro"
             continue
         wd = dict(s.get("widget") or {})
-        kind = wd.get("kind") if wd.get("kind") in KINDS else None
-        if kind == "draw":
-            wd, ok = _draw(wd, i)
-            kind = "draw" if ok else None
-        if kind is None:  # no widget, a retired kind from an old spec, or an unusable drawing: a scene by meaning
-            wd = {k2: v for k2, v in wd.items() if k2 in ("cap", "notify", "toast", "label", "who", "status", "err", "app", "cat", "icon")}
-            kind = _auto(s["text"], prev, kind_count, seed + i)
-        kind_count[kind] = kind_count.get(kind, 0) + 1
+        wd, ok = _draw(wd, i) if wd.get("kind") in KINDS else (wd, False)
+        if not ok:  # no widget, a retired kind from an old spec, or an unusable drawing: only the caption/notification stay, the picture is a plain panel
+            wd = {k2: v for k2, v in wd.items() if k2 in ("cap", "notify", "toast", "app", "cat", "icon")}
+        kind = "draw"
         dapp, dicon, dcat = wk.DEFAULT_APP[kind]
         if "notify" in wd:
             bn = wd["notify"]
@@ -157,7 +129,6 @@ def resolve(plan, spec, cfg):
         notify = {"app": str(bn.get("app", "")), "text": str(bn.get("text", "")), "icon": str(bn.get("icon", "#34c759")), "glyph": _glyph(bn)} if isinstance(bn, dict) and bn else None
         out.append({"i": i, "role": "lyric", "start": s["start"], "end": end, "text": _clip(s["text"], 100), "kind": kind, "w": wd,
                     "app": wd.get("app") or dapp, "icon": wd.get("icon") or dicon, "cat": wd.get("cat", dcat), "notify": notify})
-        prev = kind
     ost = next((x["start"] for x in out if x["role"] == "outro"), dur)
     hook = _clip(str(spec.get("hook") or "О чём эта строка?").upper(), 36)
     return {

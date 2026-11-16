@@ -175,29 +175,6 @@ def test_unreliable_lyrics_are_not_rendered_and_the_rest_continue(tmp_path):
 NEW_ARTS = ("phone", "window", "flame", "lock", "bird", "wave")
 
 
-def test_author_prompt_asks_for_other_kinds_than_the_rest_of_the_day():
-    from pipeline import author
-    lines = [{"start": 0, "end": 3, "text": "строка", "words": []}]
-    p = author.build_prompt({"artist": "A", "title": "T", "avoid_kinds": ["weather", "night"]}, lines, CFG)
-    assert "weather, night" in p and "{{AVOID}}" not in p
-    assert "{{AVOID}}" not in author.build_prompt({"artist": "A", "title": "T"}, lines, CFG)
-
-
-def test_batch_tells_the_author_what_earlier_videos_used(tmp_path):
-    aud = _batch_env(tmp_path, ["One", "Two"])
-    frag = {"first": 0, "last": 0, "start": 0, "end": 40, "length": 40, "reason": "x", "low_ratio": 0.0}
-    built, seen = [], []
-    stages, _ = _stages(aud, lambda a, p, c: {"fragment": frag, "lines": [], "beats": [], "summary": {}}, built)
-
-    def author(entry, analysis, spec, cfg):
-        seen.append(list(entry["avoid_kinds"]))
-        return analysis, dict(spec, widgets=[{"lines": [0], "kind": "pair"}, {"lines": [1], "kind": "ring"}]), "claude: 2 cards"
-
-    stages["author"] = author
-    batch.run_batch("tiktok", 2, "2026-11-06", CFG, root=tmp_path, stages=stages)
-    assert seen == [[], ["pair", "ring"]]
-
-
 # ---- Claude-drawn pictures (kind "draw")
 from pipeline import author, svg_safe  # noqa: E402
 
@@ -327,8 +304,8 @@ def test_a_long_line_can_be_two_cards_and_empty_lines_join_a_neighbour():
     lines = [{"start": 0, "end": 4, "text": "a", "words": words(0, 8)}, {"start": 4.5, "end": 5.5, "text": "у-у", "words": words(4.5, 2)},
              {"start": 6, "end": 8, "text": "b", "words": words(6, 4)}]
     an = {"lines": lines, "fragment": {"first": 0, "last": 2, "start": 0.0, "end": 8.0}, "beats": []}
-    ws = author.sanitize_widgets([{"lines": [0], "kind": "night", "half": 0}, {"lines": [0], "kind": "deep", "half": 1},
-                                  {"lines": [1, 2], "kind": "bloom"}, {"lines": [0], "kind": "weather"}], 3)
+    ws = author.sanitize_widgets([{"lines": [0], "kind": "draw", "svg": GOOD, "half": 0}, {"lines": [0], "kind": "draw", "svg": GOOD, "half": 1},
+                                  {"lines": [1, 2], "kind": "draw", "svg": GOOD}, {"lines": [0], "kind": "draw", "svg": GOOD}], 3)
     assert [(w["lines"], w.get("half")) for w in ws] == [([0], 0), ([0], 1), ([1, 2], None)]  # the 4th overlaps line 0: dropped
     sc = script_gen.build_scenes(an, {"artist": "A", "title": "T"}, {"tail_sec": 2.5, "whisper": {"min_confidence": .5}}, widgets=ws)["scenes"]
     assert [len(s["words"]) for s in sc if s["role"] == "lyric"] == [4, 4, 6]  # 8 words split 4+4; the vocalise joins the last card

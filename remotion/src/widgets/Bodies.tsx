@@ -1,10 +1,9 @@
 import React, { useLayoutEffect, useRef } from "react";
 import { applyTweens, pr, yoyo } from "./anim";
-import { SCENES } from "./Scenes";
 import type { BodyProps } from "./types";
 
-// Card pictures: `draw` (a picture Claude drew as SVG, its shapes moved by tweens) and the animated scenes in Scenes.tsx.
-// The old template cards (counter, search, chat, pair, ring ...) were removed on 2026-11-09 and must not come back.
+// Card picture: only `draw` (a picture Claude drew as SVG, its shapes moved by tweens). A line without a usable drawing gets a plain gradient panel.
+// The old template cards (counter, search, chat, pair, ring ...) were removed on 2026-11-09 and the eight ready-made scenes on 2026-11-16: neither may come back.
 const INK = "#14141f";
 const clip = (t: unknown, n: number) => {
   const s = String(t ?? "");
@@ -17,9 +16,9 @@ const put = (el: Element | null, v: { x?: number; y?: number; scale?: number; ro
   if (v.o !== undefined) s.opacity = String(v.o);
 };
 
-const Draw: React.FC<BodyProps> = ({ w, i, u, d }) => {
+const Draw: React.FC<BodyProps> = ({ w, i, u, d, ta, tb }) => {
   const ref = useRef<SVGSVGElement>(null);
-  const picture = ((w.frames as string[]) ?? [])[0] ?? "";
+  const picture = ((w.frames as string[]) ?? [])[0] || `<rect width="800" height="420" fill="${ta}" opacity="0.22"/><rect width="800" height="420" fill="${tb}" opacity="0.12"/>`;
   const at = (f: number) => Math.min(f * d, Math.max(d - 0.35, 0.1));
   useLayoutEffect(() => {
     const r = ref.current;
@@ -46,9 +45,4 @@ const Draw: React.FC<BodyProps> = ({ w, i, u, d }) => {
   );
 };
 
-const KINDS: Record<string, React.FC<BodyProps>> = { draw: Draw, ...SCENES };
-
-export const Body: React.FC<BodyProps & { kind: string }> = ({ kind, ...p }) => {
-  const K = KINDS[kind] ?? SCENES.night;
-  return <K {...p} />;
-};
+export const Body: React.FC<BodyProps & { kind: string }> = (p) => <Draw {...p} />;

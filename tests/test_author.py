@@ -10,13 +10,13 @@ ENTRY = {"artist": "A", "title": "T"}
 DRAW = '<rect width="800" height="420" fill="#eef"/><circle cx="400" cy="210" r="80" fill="#f49"/>'
 SC = {"about": "про дружбу и путь с нуля", "arc": ["вместе начали", "поссорились", "снова рядом"], "trim": {"from": 1, "to": 5}, "hook": "кто виноват?",
       "caption": "Про любовь. Сделано с ИИ", "mood": "dark",
-      "cards": [{"lines": [0, 1], "kind": "weather", "idea": "два зонта под солнцем и дождём", "cap": "Ты"},
-                {"lines": [2], "kind": "typing", "idea": "чат, где никто не отвечает"},
+      "cards": [{"lines": [0, 1], "kind": "draw", "idea": "два зонта под солнцем и дождём", "cap": "Ты"},
+                {"lines": [2], "kind": "draw", "idea": "чат, где никто не отвечает"},
                 {"lines": [3], "kind": "draw", "idea": "пустой стул у стола"},
                 {"lines": [4], "kind": "draw", "idea": "ключ в двери"}]}
-GOOD = {"widgets": [{"lines": [0, 1], "kind": "weather", "label": "Ты", "notify": {"app": "Сообщения", "text": "Новое", "icon": "#34c759"}},
-                    {"lines": [2], "kind": "typing", "status": "не в сети"},
-                    {"lines": [3], "kind": "draw", "svg": "<script/>"},  # an unsafe drawing: dropped, the line gets an automatic scene
+GOOD = {"widgets": [{"lines": [0, 1], "kind": "draw", "svg": DRAW, "notify": {"app": "Сообщения", "text": "Новое", "icon": "#34c759"}},
+                    {"lines": [2], "kind": "draw", "svg": DRAW},
+                    {"lines": [3], "kind": "draw", "svg": "<script/>"},  # an unsafe drawing: dropped, the line gets a plain panel
                     {"lines": [4], "kind": "draw", "svg": DRAW, "icon": "javascript:1"}]}  # bad icon dropped
 
 
@@ -43,9 +43,8 @@ def test_good_answer_trims_and_sanitizes(monkeypatch):
     an, sp, st = run("```json\n" + json.dumps(GOOD) + "\n```")
     assert st.startswith("claude") and "trim 1..5" in st and "scenario 4 cards -> 3 built" in st
     assert (an["fragment"]["first"], an["fragment"]["last"]) == (1, 5) and an["fragment"]["length"] == 19.5
-    assert [w["kind"] for w in sp["widgets"]] == ["weather", "typing", "draw"] and "icon" not in sp["widgets"][2]  # the unsafe drawing was dropped
+    assert [w["kind"] for w in sp["widgets"]] == ["draw", "draw", "draw"] and "icon" not in sp["widgets"][2]  # the unsafe drawing was dropped
     assert sp["hook"] == "КТО ВИНОВАТ?" and sp["caption"].endswith("ИИ") and sp["theme"] == "dark" and sp["about"].startswith("про дружбу")
-    assert sp["widgets"][1]["status"] == "не в сети"
     assert sp["scenario"]["arc"][0] == "вместе начали" and len(sp["scenario"]["cards"]) == 4  # the script stays with the spec
 
 
@@ -71,16 +70,16 @@ def test_a_build_that_ignores_the_scenario_is_redone_without_a_new_scenario(monk
 def test_an_unusable_scenario_falls_back(monkeypatch):
     monkeypatch.delenv("VYBEX_NO_AUTHOR")
     for bad in (dict(SC, cards=SC["cards"][:2]),                       # too few cards
-                dict(SC, cards=SC["cards"][:3] + [dict(SC["cards"][1], lines=[4])]),  # ends with a template
+                dict(SC, cards=SC["cards"][:2] + [dict(SC["cards"][0], kind="weather", lines=[3]), dict(SC["cards"][0], kind="night", lines=[4])]),  # ready-made scenes are not cards
                 {k: v for k, v in SC.items() if k != "about"}):       # no theme of the whole song
         assert run(GOOD, scenario=bad)[2].startswith("fallback")
 
 
 def test_retired_template_kinds_never_survive():
-    old = ("pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene")
+    old = ("pair", "pulse", "route", "venn", "ring", "thermo", "alert", "target", "polaroid", "versus", "counter", "search", "chat", "dots", "camera", "scene",
+           "weather", "typing", "bloom", "duo", "breath", "deep", "unlock", "night")  # + the eight animated scenes (2026-11-16)
     w = [{"lines": [i], "kind": k, "from": 1, "to": 2, "art": "moon"} for i, k in enumerate(old)]
-    assert author.sanitize_widgets(w, len(old)) == []  # the owner removed them: they must not appear (2026-11-09)
-    assert [x["kind"] for x in author.sanitize_widgets([{"lines": [0], "kind": "deep"}, {"lines": [1], "kind": "night", "big": "x"}], 2)] == ["deep", "night"]
+    assert author.sanitize_widgets(w, len(old)) == []  # the owner removed them: they must not appear (2026-11-09, scenes 2026-11-16)
 
 
 def test_bad_trim_is_ignored_and_failures_fall_back(monkeypatch):
@@ -110,7 +109,6 @@ def test_a_bad_first_answer_is_retried(monkeypatch):
     assert author.author(ENTRY, AN, SPEC, CFG, runner=always_bad)[2].startswith("fallback") and n[0] == 3
 
 
-def test_every_brief_is_different_and_bans_real_kinds():
-    briefs = {author.variety() for _ in range(12)}
-    assert all(len(b.split("виды:")[1].split(".")[0].split(",")) == 3 for b in briefs)
-    assert len(briefs) > 6 and all("НЕ используй виды:" in b and "draw" not in b.split("виды:")[1].split(".")[0] for b in briefs)
+def test_every_brief_is_different_and_names_no_ready_made_kinds():
+    briefs = {author.variety() for _ in range(40)}
+    assert len(briefs) > 6 and all("Стиль всех рисунков" in b and "НЕ используй виды" not in b for b in briefs)
