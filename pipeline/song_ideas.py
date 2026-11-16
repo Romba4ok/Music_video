@@ -31,20 +31,30 @@ def pick(items, have=(), top=20):
         if not k or any(h in k or k in h for h in have):
             continue
         out.append({"title": title, "channel": it["snippet"]["channelTitle"],
-                    "views": int(it.get("statistics", {}).get("viewCount", 0)),
+                    "views": int(it.get("statistics", {}).get("viewCount", 0)), "sec": 0,
                     "url": f"https://youtu.be/{it['id']}"})
     return out[:top]
 
 
 def render_md(rows, region, status="ok"):
     head = f"# Идеи песен ({region}) - {time.strftime('%Y-%m-%d', time.gmtime())}\n\n" \
-           "Источник: чарт YouTube «Популярная музыка» (официальный API), не TikTok. Бери то, что подходит по вкусу, " \
+           "Источник: чарт YouTube «Популярная музыка» (официальный API) или, без ключа, неофициальный чарт KZ в Deezer; не TikTok. Бери то, что подходит по вкусу, " \
            "и клади `Артист - Название.mp3` в Drive/audio.\n\n"
     if status != "ok":
         return head + f"Сегодня данных нет: {status}\n"
-    lines = [f"{i}. **{r['title']}** - {r['channel']}, {r['views']:,} просм. [видео]({r['url']})".replace(",", " ")
+    lines = [f"{i}. **{r['title']}** - {r['channel']}{f", {r['views']:,} просм." if r['views'] else ""} [ссылка]({r['url']})".replace(",", " ")
              for i, r in enumerate(rows, 1)]
     return head + "\n".join(lines) + "\n"
+
+
+# shortcut: unofficial user-made copy of a KZ chart (no official keyless one exists), may vanish; upgrade: set YOUTUBE_API_KEY
+DEEZER_KZ = "https://api.deezer.com/playlist/14867126923"
+
+
+def fetch_deezer(http_get=get_json):
+    """No-key fallback: same row shape as pick(); `views` is 0 (the playlist has no counts), order = chart order."""
+    return [{"title": f"{t['artist']['name']} - {t['title']}", "channel": "Deezer (неофициальный чарт KZ)", "views": 0, "url": t["link"], "sec": t.get("duration", 0)}
+            for t in http_get(DEEZER_KZ)["tracks"]["data"]]
 
 
 def fetch(region, key, http_get=get_json):
@@ -64,9 +74,13 @@ def main(argv):
         have = [os.path.splitext(l.strip())[0] for l in open(a.have_file, encoding="utf-8") if l.strip()]
     try:
         key = os.environ.get("YOUTUBE_API_KEY")
-        if not key:
-            raise NeedsAuth("secret YOUTUBE_API_KEY is not set")
-        md = render_md(pick(fetch(region, key), have), region)
+        if key:
+            rows = pick(fetch(region, key), have)
+        else:
+            hk = [k for k in (_key(h) for h in have) if len(k) > 3]
+            rows = [r for r in fetch_deezer() if not any(h in _key(r["title"]) for h in hk)][:50]
+            print("ideas: YOUTUBE_API_KEY not set, using the unofficial Deezer KZ chart", file=sys.stderr)
+        md = render_md(rows, region)
     except Exception as e:  # optional feature: report in the file, never break the video job
         why = str(e) if isinstance(e, NeedsAuth) else safe_err(e)
         md = render_md([], region, status=why)

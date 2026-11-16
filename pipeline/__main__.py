@@ -10,6 +10,7 @@ USAGE = """stages:
   buffer setup | publish out/<date>   send ready videos to the Buffer TikTok queue (docs/buffer.md)
   trends                          TikTok trends from official/permitted data
   ideas [--have-file f] [-o out/ideas.md]   song ideas from the YouTube music chart (needs YOUTUBE_API_KEY) -> Drive/ideas.md
+  songs [--out out/fetched] [--max 5]   daily: queue + KZ chart -> licensed full tracks (cc0/pd/by) -> mp3 + journal (workflow uploads to Drive)
   insights [--acc main]          views by card recipe (accounts/<acc>/cards.jsonl + views.csv)
 """
 
@@ -60,6 +61,9 @@ def main(argv):
     if cmd == "ideas":
         from . import song_ideas
         return song_ideas.main(rest)
+    if cmd == "songs":
+        from . import fetch_songs
+        return fetch_songs.main(rest)
     if cmd == "insights":
         from . import insights
         return insights.main(rest)

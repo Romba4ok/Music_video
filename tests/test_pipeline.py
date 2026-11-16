@@ -145,11 +145,25 @@ def test_ideas_pick_cleans_titles_and_skips_owned():
     assert [x["title"] for x in r] == ["Guf - Ice Baby"] and r[0]["url"] == "https://youtu.be/b"
 
 
-def test_ideas_without_key_writes_note(tmp_path, monkeypatch):
+def test_ideas_without_key_uses_deezer_and_skips_have(tmp_path, monkeypatch):
     from pipeline import song_ideas
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    rows = [{"title": "Tasso - Таю", "channel": "Deezer", "views": 0, "url": "u1"}, {"title": "Баста - Моя игра", "channel": "Deezer", "views": 0, "url": "u2"}]
+    monkeypatch.setattr(song_ideas, "fetch_deezer", lambda: rows)
+    have = tmp_path / "have.txt"
+    have.write_text("Баста - Моя игра.mp3\n", encoding="utf-8")
     out = tmp_path / "i.md"
-    assert song_ideas.main(["-o", str(out)]) == 0 and "YOUTUBE_API_KEY" in out.read_text(encoding="utf-8")
+    assert song_ideas.main(["--have-file", str(have), "-o", str(out)]) == 0
+    md = out.read_text(encoding="utf-8")
+    assert "Таю" in md and "Моя игра" not in md
+
+
+def test_ideas_deezer_failure_writes_note(tmp_path, monkeypatch):
+    from pipeline import song_ideas
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    monkeypatch.setattr(song_ideas, "fetch_deezer", lambda: 1 / 0)
+    out = tmp_path / "i.md"
+    assert song_ideas.main(["-o", str(out)]) == 0 and "Сегодня данных нет" in out.read_text(encoding="utf-8")
 
 
 # ---- chorus + fragment

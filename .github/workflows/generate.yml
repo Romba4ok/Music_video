@@ -122,3 +122,22 @@ jobs:
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
           [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
           echo "Results: Drive/ready/$D." >> "$GITHUB_STEP_SUMMARY"
+      - name: "Memory + cleanup: when Drive/audio has no songs left, remember what was processed, then empty done/"
+        if: always()
+        shell: bash   # bash -e -o pipefail: the memory must be saved before anything is deleted; a failure stops the step
+        run: |
+          if [ -n "$(rclone lsf gd:audio | grep -iE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' || true)" ]; then
+            echo "Songs are still in Drive/audio: nothing to clean" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          mkdir -p out
+          ROOT_LS=$(rclone lsf gd:)
+          if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'songs.md'; then rclone copyto gd:state/songs.md out/songs-memory.md
+          else cp accounts/main/songs-memory.md out/songs-memory.md; fi
+          : > out/done.txt
+          if echo "$ROOT_LS" | grep -qx 'done/'; then rclone lsf gd:done | grep -v '/$' > out/done.txt || true; fi
+          python -m pipeline songs --state out/songs-memory.md --record-used out/done.txt
+          rclone copyto out/songs-memory.md gd:state/songs.md   # saved BEFORE the delete below
+          rclone delete gd:audio --include "*.license.json"      # attribution files of songs that are already processed
+          if [ -s out/done.txt ]; then rclone delete gd:done; fi # files go to the Drive trash (recoverable ~30 days), the folder stays
+          if echo "$ROOT_LS" | grep -qx 'ready/'; then rclone rmdirs gd:ready --leave-root; fi   # only EMPTY date folders (videos that Buffer sent were already deleted by drive-cleanup); unsent drafts stay
+          echo "Drive/audio is empty: $(wc -l < out/done.txt) processed songs remembered in Drive/state/songs.md, Drive/done emptied." >> "$GITHUB_STEP_SUMMARY"

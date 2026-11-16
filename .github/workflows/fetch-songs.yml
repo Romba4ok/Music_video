@@ -1,0 +1,61 @@
+name: fetch-songs
+# Daily: queue.md + KZ chart -> full tracks from sources that allow it (CC0 / public domain / CC-BY; see docs/rights.md) -> Drive/audio.
+# Songs with no licensed full recording are skipped and journaled (Drive/state/fetch.json). No DRM or paywall is bypassed, nothing is ripped from YouTube/streaming.
+# generate.yml (videos + Buffer) is untouched: it pulls whatever is in Drive/audio, as before.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      max:
+        description: max new songs this run
+        default: "5"
+concurrency:
+  group: fetch-songs
+  cancel-in-progress: false
+env:
+  RCLONE_CONFIG_GD_TYPE: drive
+  RCLONE_CONFIG_GD_SCOPE: drive
+  RCLONE_CONFIG_GD_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+  RCLONE_CONFIG_GD_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+  RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg rclone
+      - run: pip install -r requirements.txt
+      - name: Drive token
+        env:
+          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        run: |
+          echo "::add-mask::$RT"
+          python -c "import json,os;print('RCLONE_CONFIG_GD_TOKEN='+json.dumps({'access_token':'','token_type':'Bearer','refresh_token':os.environ['RT'],'expiry':'2000-01-01T00:00:00Z'}))" >> "$GITHUB_ENV"
+      - name: Memory, queue and what Drive already has
+        shell: bash   # a Drive error stops the step; "no file yet" is accepted only when the listing really lacks it
+        run: |
+          mkdir -p out
+          ROOT_LS=$(rclone lsf gd:)   # fails the step on a real Drive error, so a missing memory below can only mean "first run"
+          { rclone lsf gd:audio; rclone lsf gd:done; } | grep -v '/$' > out/have.txt || true
+          if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'songs.md'; then rclone copyto gd:state/songs.md out/songs-memory.md
+          else echo "no memory in Drive yet: starting from the repo seed"; cp accounts/main/songs-memory.md out/songs-memory.md; fi
+          if echo "$ROOT_LS" | grep -qx 'queue.txt'; then rclone copyto gd:queue.txt accounts/main/queue.md; else echo "no Drive queue.txt: repo queue.md is used"; fi
+      - name: Search and download (allowed sources only)
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
+        run: python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "${{ github.event.inputs.max || '5' }}" | tee out/songs.json
+      - name: Upload to Drive/audio, then save the memory
+        shell: bash
+        run: |
+          if [ -n "$(ls -A out/fetched 2>/dev/null)" ]; then rclone copy out/fetched gd:audio; fi
+          rclone copyto out/songs-memory.md gd:state/songs.md   # after the audio upload: a failed upload is retried tomorrow
+          tail -n 1 out/songs.json | python -c "import json,sys;r=json.load(sys.stdin);print('Downloaded today: %d of %d searched; skipped in memory: %d' % (len(r['downloaded']), r['tried'], r['skipped_total']));[print('- '+f) for f in r['downloaded']]" >> "$GITHUB_STEP_SUMMARY"
+          echo "Memory: Drive/state/songs.md" >> "$GITHUB_STEP_SUMMARY"
