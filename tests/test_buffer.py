@@ -166,9 +166,19 @@ def test_draft_has_no_time_and_does_not_look_at_the_queue(tmp_path):
     assert (out / "ready" / "1 Баста - Песня 1.mp4").exists()
 
 
-def test_silent_video_becomes_a_notification_not_auto_publishing(tmp_path):
+def test_silent_video_is_published_automatically_by_default(tmp_path):
     out, buf = make_out(tmp_path, n=1, mode="tiktok"), FakeBuf()
     res = run(out, tmp_path, QUEUE, buf)
+    assert res[0]["state"] == "scheduled" and buf.calls[0]["notify"] is False   # no phone needed
+    out2, buf2 = make_out(tmp_path / "n", n=1, mode="tiktok"), FakeBuf()
+    now = run(out2, tmp_path / "n", dict(ENV, VYBEX_BUFFER="now"), buf2)
+    assert now[0]["state"] == "posting" and buf2.calls[0]["notify"] is False
+
+
+def test_silent_video_becomes_a_notification_only_when_configured(tmp_path):
+    out, buf = make_out(tmp_path, n=1, mode="tiktok"), FakeBuf()
+    cfg = {**CFG, "buffer": {**CFG["buffer"], "silent_notify": True}}
+    res = run(out, tmp_path, QUEUE, buf, cfg=cfg)
     assert res[0]["state"] == "notify" and buf.calls[0]["notify"] is True
 
 

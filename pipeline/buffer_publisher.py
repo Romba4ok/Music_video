@@ -4,8 +4,8 @@ Per video: rights gate -> media checks (ffprobe + full decode) -> already sent? 
 folder (Buffer needs a public HTTPS URL) -> check the URL like Buffer will -> createPost -> state + report.json.
 Modes (VYBEX_BUFFER env/variable, else config buffer.mode; anything unknown = off):
   off    nothing        plan   read-only: checks, free slots, nothing uploaded or created
-  draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos get a
-                               *notification* (reminder to add the TikTok sound by hand) instead of automatic publishing
+  draft  Buffer draft   queue  customScheduled post at the next free slot (12:00/17:00/21:00 Asia/Almaty); silent videos (mode tiktok) are published like any
+                               other; only with config buffer.silent_notify=true they get a *notification* (reminder to add the sound by hand)
   now    shareNow: the post is published to the account right away (no slot, no queue); nothing is spread over the day
 The Buffer posting schedule cannot be written through the API, so slots are set per post (`dueAt`, UTC). Existing drafts are never edited.
 Hosted files must live until Buffer posts them (it fetches at publish time) and are deleted by age. The MP4 in ready/ is never touched.
@@ -405,6 +405,7 @@ def publish_one(c, mp4, caption, rec, silent):
         ok, why = rights_ok(rec, c.env)
         if not ok:
             return {"state": "refused", "detail": why}
+        notify = bool(silent and c.bcfg.get("silent_notify", False))  # default: a silent video is published by Buffer itself, no phone needed
         info = check_media(mp4, not silent, c.bcfg)
         sha = sha256(mp4)
         old = c.state.get(sha)
@@ -417,7 +418,7 @@ def publish_one(c, mp4, caption, rec, silent):
         due = free_slots(1, c.taken, c.tz, c.hm, c.now)[0] if c.mode in ("queue", "plan") else None
         if c.mode == "plan":
             c.taken.append(due)
-            return {"state": "plan", "due": due.astimezone(c.tz).isoformat(), "notification": silent, "media": info}
+            return {"state": "plan", "due": due.astimezone(c.tz).isoformat(), "notification": notify, "media": info}
         pid, size = f"vybex/{sha[:40]}", Path(mp4).stat().st_size
         url = c.storage.upload(mp4, pid)
         base = rec.get("ready") or Path(mp4).stem
@@ -426,16 +427,16 @@ def publish_one(c, mp4, caption, rec, silent):
                         "drive": {"dir": f"ready/{c.date}", "files": [f"{base}.mp4", f"{base} caption.txt", f"{base} sync.txt"], "song": rec.get("audio_name")}}
         check_url(url, size)
         try:
-            post_id = c.buf.create_post(c.channel["id"], caption, url, c.mode, due, silent)
+            post_id = c.buf.create_post(c.channel["id"], caption, url, c.mode, due, notify)
         except Ambiguous:  # maybe it did go through: look in the queue before anyone repeats it
             twin = next((p for p in c.buf.scheduled(c.channel["org"], c.channel["id"]) if p["text"] == caption), None) if c.mode == "queue" else None
             if not twin:
                 raise
             post_id = twin["id"]
-        c.state[sha].update(post_id=post_id, status={"draft": "draft", "now": "sending"}.get(c.mode, "scheduled"), notification=silent)
+        c.state[sha].update(post_id=post_id, status={"draft": "draft", "now": "sending"}.get(c.mode, "scheduled"), notification=notify)
         if due:
             c.taken.append(due)
-        res = {"state": "draft" if c.mode == "draft" else ("notify" if silent else "posting" if c.mode == "now" else "scheduled"), "post_id": post_id}
+        res = {"state": "draft" if c.mode == "draft" else ("notify" if notify else "posting" if c.mode == "now" else "scheduled"), "post_id": post_id}
         if due:
             res["due"] = due.astimezone(c.tz).isoformat()
         return res
