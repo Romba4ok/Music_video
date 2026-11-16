@@ -67,7 +67,9 @@ jobs:
           HAVE=$(rclone lsf gd:audio | grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' || true)
           NEED=$(( TARGET - HAVE )); [ "$NEED" -lt 0 ] && NEED=0
           echo "Songs in Drive/audio: $HAVE, target $TARGET, downloading up to $NEED" | tee -a "$GITHUB_STEP_SUMMARY"
-          python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED" --previews   # no --discover: only songs of queue.md / the Russian chart. --previews: a queue.md song with no licensed file gets its official 30 s preview (analysis only, the video must be made in mode tiktok) | tee out/songs.json
+          # no --discover: only songs of queue.md / the Russian chart. --previews: a queue.md song with no licensed file gets its official 30 s preview
+          # (analysis only, the video must be made in mode tiktok)
+          python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED" --previews | tee out/songs.json
       - name: Upload to Drive/audio, then save the memory
         shell: bash
         run: |
