@@ -20,17 +20,19 @@ def fmt_ts(s):
     return f"{int(s // 60)}:{s % 60:05.2f}"
 
 
-def sync_info(spec, plan):
+def sync_info(spec, plan, preview=False):
     song = spec["song"]
     t = plan["audio_start"]
     steps = [
         "Загрузите ролик в TikTok (из inbox или вручную).",
         f"Нажмите «Добавить звук» → найдите официальный трек «{song['artist']} — {song['title']}».",
+        (f"Время старта в треке неизвестно: текст разобран по 30-секундному превью, а оно начинается с неизвестного места песни. Подведите звук на слух так, чтобы "
+         f"первая строка прозвучала вместе с первой карточкой (ролик {plan['duration']} с). Ориентир внутри превью: {fmt_ts(t)}.") if preview else
         f"В обрезке звука поставьте начало на {fmt_ts(t)} (фрагмент песни {plan['duration'] - 2.5:.0f} с, ролик {plan['duration']} с).",
         "Громкость оригинального звука ролика не нужна: в файле звука нет.",
     ]
     return {"song": song, "sound_start_sec": t, "sound_start": fmt_ts(t), "video_duration": plan["duration"],
-            "beats_first": plan["beats"][:8], "steps": steps}
+            "beats_first": plan["beats"][:8], "steps": steps, "preview_only": preview}
 
 
 def _plan(spec, d, n, cfg):
@@ -80,7 +82,9 @@ def build_one(d, n, cfg):
             "song": spec["song"], "metaphor": spec["metaphor"], "palette": spec["palette"],
             "attribution": [a for a in attrib if a], "ai_label": True}
     if spec["mode"] == "tiktok":
-        sync = sync_info(spec, plan)
+        side = ROOT / spec.get("audio", "") if spec.get("audio") else None
+        preview = bool(side and Path(str(side) + ".license.json").exists() and json.loads(Path(str(side) + ".license.json").read_text(encoding="utf-8")).get("analysis_only"))
+        sync = sync_info(spec, plan, preview)
         meta["sync"] = sync
         (d / f"sync-{n}.json").write_text(json.dumps(sync, ensure_ascii=False, indent=1), encoding="utf-8")
         (d / f"sync-{n}.txt").write_text("\n".join(f"{i}. {s}" for i, s in enumerate(sync["steps"], 1)), encoding="utf-8")

@@ -1,6 +1,7 @@
 name: fetch-songs
 # First job of every generate run (workflow_call) and a manual button: tops Drive/audio up to `target` songs (default 3), then generate makes the videos.
 # Songs: only queue.md and the Russian part of the KZ chart, each searched in sources that allow download (CC0 / public domain / CC-BY; see docs/rights.md).
+# A queue.md song without a licensed file gets its official 30 s preview (Apple/Deezer) for lyric timing only: such a video is made in mode tiktok, the sound is added in TikTok.
 # Songs with no licensed full recording are skipped and remembered (Drive/state/songs.md). No DRM or paywall is bypassed, nothing is ripped from YouTube/streaming.
 on:
   workflow_call:
@@ -66,7 +67,7 @@ jobs:
           HAVE=$(rclone lsf gd:audio | grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' || true)
           NEED=$(( TARGET - HAVE )); [ "$NEED" -lt 0 ] && NEED=0
           echo "Songs in Drive/audio: $HAVE, target $TARGET, downloading up to $NEED" | tee -a "$GITHUB_STEP_SUMMARY"
-          python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED"   # no --discover: only songs from queue.md / the Russian chart, never random open-license tracks | tee out/songs.json
+          python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED" --previews   # no --discover: only songs of queue.md / the Russian chart. --previews: a queue.md song with no licensed file gets its official 30 s preview (analysis only, the video must be made in mode tiktok) | tee out/songs.json
       - name: Upload to Drive/audio, then save the memory
         shell: bash
         run: |

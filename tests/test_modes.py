@@ -216,3 +216,21 @@ def test_clean_lines_drops_latin_hallucinations_in_russian():
     got = analyze.clean_lines(lines, "ru")
     assert [l["text"] for l in got] == ["Привет"]
     assert analyze.clean_lines(lines, "en") == lines
+
+
+def test_sync_info_for_a_preview_does_not_claim_a_start_time():
+    s = build.sync_info({"song": {"artist": "A", "title": "T"}}, {"audio_start": 4.0, "duration": 30.0, "beats": []}, preview=True)
+    assert s["preview_only"] is True and "неизвестно" in s["steps"][2] and "начало на" not in s["steps"][2]
+
+
+def test_a_preview_file_is_refused_in_auto_mode_and_allowed_in_tiktok_mode(tmp_path, monkeypatch):
+    import json as _j
+    from pipeline import batch
+    (tmp_path / "A - T.mp3").write_bytes(b"x")
+    (tmp_path / "A - T.mp3.license.json").write_text(_j.dumps({"analysis_only": True}), encoding="utf-8")
+    monkeypatch.setattr(batch, "ROOT", tmp_path)
+    monkeypatch.setattr(batch.download, "ensure_audio", lambda p, r=False: p)
+    cfg = {"audio_dir": "."}
+    entry = {"artist": "A", "title": "T", "popular_line": "", "audio_file": "A - T.mp3"}
+    assert batch.fetch_audio(entry, cfg, "auto")[0] is None
+    assert batch.fetch_audio(entry, cfg, "tiktok")[0] == tmp_path / "A - T.mp3"

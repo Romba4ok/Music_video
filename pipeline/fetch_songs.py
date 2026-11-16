@@ -148,6 +148,75 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
     return None, last
 
 
+PREVIEW_CLIPS = ("https://itunes.apple.com/search", "https://api.deezer.com/search")
+AUDIO_EXT = (".mp3", ".wav", ".m4a", ".ogg", ".flac")
+
+
+def preview_candidates(w, get=None):
+    """Official 30 s promo clips (Apple Music KZ, Deezer) of the wanted song -> [Candidate]. Only clips the services publish for free through their public APIs."""
+    get = get or sources.get_json
+    q = f'{w["artist"]} {w["title"]}'
+    out = []
+    try:
+        for r in get(PREVIEW_CLIPS[0], {"term": q, "country": "kz", "entity": "song", "limit": 8}).get("results", []):
+            if r.get("previewUrl"):
+                out.append(sources.Candidate("apple-preview", r.get("trackName") or "", r.get("artistName") or "", r["previewUrl"], "official-preview", "", r.get("trackViewUrl") or "", sec=30))
+    except Exception as e:
+        print("songs: apple preview search failed:", safe_err(e), file=sys.stderr)
+    try:
+        for r in get(PREVIEW_CLIPS[1], {"q": q, "limit": 8}).get("data", []):
+            if r.get("preview"):
+                out.append(sources.Candidate("deezer-preview", r.get("title") or "", (r.get("artist") or {}).get("name") or "", r["preview"], "official-preview", "", r.get("link") or "", sec=30))
+    except Exception as e:
+        print("songs: deezer preview search failed:", safe_err(e), file=sys.stderr)
+    return [c for c in out if sources.matches(w["artist"], w["title"], c, 0)]
+
+
+def fetch_preview(w, out, cands=None, http=None):
+    """Download the first matching official preview as `Artist - Title.mp3` + a sidecar marked analysis_only (lyric timing; never the sound of a video).
+    -> (file name | None, detail)."""
+    import requests
+    http = http or requests
+    cands = preview_candidates(w) if cands is None else cands
+    if not cands:
+        return None, "нет совпадающего официального превью (Apple, Deezer)"
+    Path(out).mkdir(parents=True, exist_ok=True)
+    tmp = Path(out) / "_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    last = ""
+    for c in cands:
+        try:
+            if not c.url.startswith("https://"):
+                raise ValueError("not https")
+            r = http.get(c.url, timeout=30)
+            r.raise_for_status()
+            if len(r.content) > 5 * 1024 * 1024:
+                raise ValueError("clip is too large")
+            raw = tmp / ("preview" + (Path(c.url.split("?")[0]).suffix or ".mp3"))
+            raw.write_bytes(r.content)
+            path, _ = download.check_audio(raw, min_sec=20, max_sec=60, fixdir=tmp / "fix")
+            name = f'{download._slug(w["artist"])} - {download._slug(w["title"])}.mp3'
+            to_mp3(path, Path(out) / name)
+            (Path(out) / (name + ".license.json")).write_text(json.dumps({"attribution": "", "license": "official-preview", "analysis_only": True,
+                "source": c.landing, "source_site": c.source, "note": "official 30 s promo clip; used only to time the lyrics, never mixed into a video"}, ensure_ascii=False, indent=1), encoding="utf-8")
+            return name, f"превью {c.source}: {c.artist} - {c.title}"
+        except Exception as e:
+            last = f"{c.source}: {type(e).__name__} {str(e)[:80]}"
+    return None, last
+
+
+def off_list(audio_dir, queue_text):
+    """Audio files in the folder that are NOT songs of queue.md (the workflow stops if any)."""
+    qk = {key(e["artist"], e["title"]) for e in parse_queue(queue_text)}
+    bad = []
+    for f in sorted(Path(audio_dir).glob("*")) if Path(audio_dir).exists() else []:
+        if f.suffix.lower() in AUDIO_EXT or f.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm", ".m4v"):
+            a, t = parse_name(f.stem)
+            if key(a, t) not in qk:
+                bad.append(f.name)
+    return bad
+
+
 DISCOVER_QUERIES = ["песня", "любовь", "город", "ночь", "душа", "дорога", "осень", "мечта", "сердце", "время"]
 
 
@@ -180,7 +249,7 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
     return got
 
 
-def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None):
+def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None):
     cfg = cfg or load_config()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -204,18 +273,24 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         return []
     have = [key(*parse_name(os.path.splitext(l.strip())[0])) for l in open(a.have_file, encoding="utf-8") if l.strip()] if a.have_file and os.path.exists(a.have_file) else []
     q = Path(a.queue)
+    qtext = q.read_text(encoding="utf-8") if q.exists() else ""
+    qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
     got, tries, dead = [], 0, set()
-    for w in wanted(cfg, q.read_text(encoding="utf-8") if q.exists() else "", fetch_chart, taste):
+    for w in wanted(cfg, qtext, fetch_chart, taste):
         k = key(w["artist"], w["title"])
         if len(got) >= a.max or tries >= a.tries:
             break
         if k in have or k in state["done"]:
             continue
         sk = state["skipped"].get(k)
-        if sk and time.mktime(time.strptime(today, "%Y-%m-%d")) - time.mktime(time.strptime(sk["date"], "%Y-%m-%d")) < RETRY_DAYS * 86400:
+        known_none = bool(sk and time.mktime(time.strptime(today, "%Y-%m-%d")) - time.mktime(time.strptime(sk["date"], "%Y-%m-%d")) < RETRY_DAYS * 86400)
+        want_preview = a.previews and k in qkeys
+        if known_none and not want_preview:
             continue
         tries += 1
-        name, why = fetch_one(w, cfg, out, searchers, dead=dead)
+        name, why = (None, sk["detail"]) if known_none else fetch_one(w, cfg, out, searchers, dead=dead)  # no licensed full file is already known: go straight to the preview
+        if not name and want_preview:
+            name, why = fetch_preview(w, out, None if preview_find is None else preview_find(w))
         if name:
             state["done"][k] = {"status": "downloaded", "date": today, "song": f'{w["artist"]} - {w["title"]}', "file": name, "detail": why}
             state["skipped"].pop(k, None)
@@ -241,12 +316,20 @@ def main(argv):
     ap.add_argument("--have-file", help="names already in Drive (audio/ and done/), one per line")
     ap.add_argument("--state", default="out/songs-memory.md", help="memory (md table): used, downloaded and skipped songs")
     ap.add_argument("--discover", action="store_true", help="if the queue/chart gave fewer than --max songs: browse open sources for Russian-titled tracks (indie, not chart)")
+    ap.add_argument("--previews", action="store_true", help="for queue.md songs with no licensed full file: take the official 30 s preview (Apple/Deezer) for lyric timing only; the video must then be made in mode tiktok")
+    ap.add_argument("--check-list", help="audio folder: exit 1 if it holds a song that is not in queue.md (the workflow stops), search nothing")
     ap.add_argument("--prune", help="write to this file the names of earlier downloads that do not fit (not Russian / not your artists), forget them in the memory, search nothing")
     ap.add_argument("--record-used", help="text file of processed audio names (Drive/done): only add them to the memory as `used`, search nothing")
     ap.add_argument("--queue", default=str(ROOT / "accounts" / "main" / "queue.md"))
     ap.add_argument("--max", type=int, default=5, help="max new songs per run")
     ap.add_argument("--tries", type=int, default=40, help="max songs searched per run")
-    run(ap.parse_args(argv))
+    a = ap.parse_args(argv)
+    if a.check_list:
+        q = Path(a.queue)
+        bad = off_list(a.check_list, q.read_text(encoding="utf-8") if q.exists() else "")
+        print(json.dumps({"not_in_list": bad}, ensure_ascii=False))
+        return 1 if bad else 0
+    run(a)
     return 0  # finding nothing is a normal outcome, not a failure
 
 

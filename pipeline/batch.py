@@ -140,6 +140,10 @@ def fetch_audio(entry, cfg, mode):
     """Resolve an audio file: queue file -> local match -> allowed sources. Returns (path|None, statuses)."""
     ad = ROOT / cfg["audio_dir"]
     if entry["audio_file"] and (ad / entry["audio_file"]).exists():
+        side = ad / (entry["audio_file"] + ".license.json")
+        if mode == "auto" and side.exists() and json.loads(side.read_text(encoding="utf-8")).get("analysis_only"):
+            # an official 30 s preview is for lyric timing only: it must never become the sound of a published video
+            return None, [{"source": "local", "state": "refused", "detail": "official preview: analysis only, run with mode tiktok (sound is added in TikTok)"}]
         return download.ensure_audio(ad / entry["audio_file"], _declared(ad, entry["audio_file"])), [
             {"source": "local", "state": "ok", "detail": entry["audio_file"]}]
     cands, sts = sources.search(f'{entry["artist"]} {entry["title"]}', cfg, n=5)

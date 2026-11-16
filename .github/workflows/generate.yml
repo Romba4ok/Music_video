@@ -70,6 +70,8 @@ jobs:
           rclone copy gd:audio accounts/main/audio --progress=false
           rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
           ls accounts/main/audio
+      - name: "Guard: only songs from the list (queue.md). Anything else in Drive/audio stops the workflow"
+        run: python -m pipeline songs --check-list accounts/main/audio
       - name: Claude CLI (optional - writes the cards, hook and notifications)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

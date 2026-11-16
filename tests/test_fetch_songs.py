@@ -87,7 +87,7 @@ def test_fetch_one_skips_when_nothing_matches_and_marks_dead_source(tmp_path):
 def run_args(tmp_path, queue="", **kw):
     q = tmp_path / "queue.md"
     q.write_text(queue, encoding="utf-8")
-    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, **kw)
+    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, previews=False, **kw)
 
 
 def test_run_journal_dedup_and_retry_window(tmp_path, monkeypatch):
@@ -181,3 +181,62 @@ def test_fits_rejects_instrumental_remix_and_cover_even_for_owners_artist():
     assert not fetch_songs.fits("Guf", "Дно (Remix)", {"guf"})
     assert not fetch_songs.fits("Кто-то", "Таю (кавер)", set())
     assert fetch_songs.fits("Кто-то", "Песня", set())
+
+
+class FakeResp:
+    content = b"x" * 100
+
+    def raise_for_status(self):
+        pass
+
+
+class FakeHttp:
+    def get(self, url, timeout=0):
+        return FakeResp()
+
+
+def prev(title="Таю", artist="TASSO", url="https://cdn.example/p.mp3"):
+    return Candidate("apple-preview", title, artist, url, "official-preview", "", "https://music.example/t", sec=30)
+
+
+def test_preview_is_saved_with_analysis_only_sidecar(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_songs.download, "check_audio", lambda p, **kw: (p, []))
+    name, why = fetch_songs.fetch_preview({"artist": "Tasso", "title": "Таю", "sec": 0}, tmp_path / "o", [prev()], FakeHttp())
+    assert name == "Tasso - Таю.mp3" and (tmp_path / "o" / name).exists()
+    side = json.loads((tmp_path / "o" / (name + ".license.json")).read_text(encoding="utf-8"))
+    assert side["analysis_only"] is True and side["license"] == "official-preview"
+    assert fetch_songs.fetch_preview({"artist": "Tasso", "title": "Таю", "sec": 0}, tmp_path / "o", [prev(url="http://insecure/p.mp3")], FakeHttp())[0] is None  # https only
+
+
+def test_preview_candidates_drop_live_versions_and_other_songs():
+    def get(url, params=None):
+        if "itunes" in url:
+            return {"results": [{"trackName": "Таю", "artistName": "TASSO", "previewUrl": "https://a/1.m4a"},
+                                {"trackName": "Таю (Live Session)", "artistName": "TASSO", "previewUrl": "https://a/2.m4a"},
+                                {"trackName": "Тихо", "artistName": "TASSO", "previewUrl": "https://a/3.m4a"}]}
+        return {"data": [{"title": "Таю", "artist": {"name": "Tasso"}, "preview": "https://d/1.mp3", "link": "l"}]}
+    got = fetch_songs.preview_candidates({"artist": "Tasso", "title": "Таю"}, get)
+    assert [c.url for c in got] == ["https://a/1.m4a", "https://d/1.mp3"]
+
+
+def test_run_with_previews_takes_list_songs_even_if_skipped_before_and_ignores_chart_songs(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_songs.download, "check_audio", lambda p, **kw: (p, []))
+    cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}
+    a = run_args(tmp_path, "Tasso | Таю | | |\n")
+    a.previews = True
+    st = {"done": {}, "skipped": {fetch_songs.key("Tasso", "Таю"): {"status": "skipped", "date": fetch_songs.time.strftime("%Y-%m-%d", fetch_songs.time.gmtime()),
+                                                                     "song": "Tasso - Таю", "file": "", "detail": "no licensed match"}}}
+    fetch_songs.save_memory(tmp_path / "memory.md", st)
+    seen = []
+    monkeypatch.setattr(fetch_songs, "fetch_preview", lambda w, out, cands=None, http=None: (seen.append(w["title"]) or ("Tasso - Таю.mp3", "превью")))
+    chart = lambda c: [{"title": "Nobody - Нету"}]
+    got = fetch_songs.run(a, cfg, {"openverse": lambda *x: []}, chart, sleep=lambda s: None, preview_find=lambda w: [prev()])
+    assert got == ["Tasso - Таю.mp3"] and seen == ["Таю"]   # the chart song got no preview, the list song did despite the 14-day window
+
+
+def test_off_list_finds_audio_that_is_not_in_queue(tmp_path):
+    (tmp_path / "Tasso - Таю.mp3").write_bytes(b"x")
+    (tmp_path / "Tasso - Таю.mp3.license.json").write_text("{}")
+    (tmp_path / "Random - Чужая.mp3").write_bytes(b"x")
+    assert fetch_songs.off_list(tmp_path, "Tasso | Таю | | |\n") == ["Random - Чужая.mp3"]
+    assert fetch_songs.off_list(tmp_path / "none", "Tasso | Таю | | |\n") == []
