@@ -1,6 +1,8 @@
 import { Composition } from "remotion";
 import { DURATION, Sansara } from "./Sansara";
 import { T9, T9_DURATION } from "./T9";
+import { Vibe, VIBE_DURATION } from "./Vibe";
+import { VibeCard, VIBECARD_DURATION } from "./VibeCard";
 import { Widgets } from "./widgets/Widgets";
 import type { WidgetsProps } from "./widgets/types";
 
@@ -21,6 +23,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition id="Widgets" component={Widgets} durationInFrames={180} fps={30} width={1080} height={1920} defaultProps={sample}
         calculateMetadata={({ props }) => ({ durationInFrames: Math.max(1, Math.round(props.duration * props.fps)), fps: props.fps, width: props.width, height: props.height })} />
       <Composition id="Sansara" component={Sansara} durationInFrames={DURATION} fps={30} width={1080} height={1920} />
+      <Composition id="Vibe" component={Vibe} durationInFrames={VIBE_DURATION} fps={30} width={1080} height={1920} />
+      <Composition id="VibeCard" component={VibeCard} durationInFrames={VIBECARD_DURATION} fps={30} width={1080} height={1920} />
       <Composition id="T9" component={T9} durationInFrames={T9_DURATION} fps={30} width={1080} height={1920} />
     </>
   );
