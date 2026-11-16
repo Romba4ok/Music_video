@@ -21,7 +21,7 @@
   "whisper": {"model": "small", "device": "cpu", "compute_type": "int8", "min_confidence": 0.5, "max_low_ratio": 0.15, "max_gap_sec": 5.0, "refine_model": "large-v3", "refine_margin": 6.0},
   "licenses_allowed": ["cc0", "pdm", "by"],
   "sources": {
-    "order": ["local", "openverse", "jamendo", "archive", "soundcloud"],
+    "order": ["local", "openverse", "jamendo", "soundcloud"],
     "ytdlp_allowed_domains": ["youtube.com", "youtu.be", "archive.org"]
   },
   "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},

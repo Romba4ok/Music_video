@@ -46,6 +46,13 @@ jobs:
           if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'songs.md'; then rclone copyto gd:state/songs.md out/songs-memory.md
           else echo "no memory in Drive yet: starting from the repo seed"; cp accounts/main/songs-memory.md out/songs-memory.md; fi
           if echo "$ROOT_LS" | grep -qx 'queue.txt'; then rclone copyto gd:queue.txt accounts/main/queue.md; else echo "no Drive queue.txt: repo queue.md is used"; fi
+      - name: Remove earlier downloads that do not fit (not Russian, not your artists)
+        shell: bash
+        run: |
+          python -m pipeline songs --state out/songs-memory.md --prune out/prune.txt
+          while read -r f; do
+            if [ -n "$f" ] && grep -qxF "$f" out/have.txt; then rclone deletefile "gd:audio/$f" && echo "removed from Drive/audio: $f" | tee -a "$GITHUB_STEP_SUMMARY"; fi   # goes to the Drive trash
+          done < out/prune.txt
       - name: Search and download (allowed sources only)
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}

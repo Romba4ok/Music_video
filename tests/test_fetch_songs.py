@@ -87,7 +87,7 @@ def test_fetch_one_skips_when_nothing_matches_and_marks_dead_source(tmp_path):
 def run_args(tmp_path, queue="", **kw):
     q = tmp_path / "queue.md"
     q.write_text(queue, encoding="utf-8")
-    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, **kw)
+    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, **kw)
 
 
 def test_run_journal_dedup_and_retry_window(tmp_path, monkeypatch):
@@ -132,3 +132,33 @@ def test_record_used_only_mode_searches_nothing(tmp_path):
     a.record_used = str(names)
     assert fetch_songs.run(a, {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}, {"openverse": lambda *x: 1 / 0}, lambda c: 1 / 0) == []
     assert len(fetch_songs.load_memory(tmp_path / "memory.md")["done"]) == 1
+
+
+def test_chart_keeps_only_russian_or_owners_artists_owners_first():
+    taste = {"guf", "jahkhalib"}
+    chart = lambda cfg: [{"title": "Taylor Swift - The Fate of Ophelia"}, {"title": "Djo - End of Beginning"}, {"title": "Tasso - Таю"},
+                         {"title": "Jah Khalib - Na Parallel`nykh Putjakh"}, {"title": "Guf - Kalpak (Feat. Mark)"}]
+    got = fetch_songs.wanted({}, "", chart, taste)
+    assert [(w["artist"], w["title"]) for w in got] == [("Jah Khalib", "Na Parallel`nykh Putjakh"), ("Guf", "Kalpak (Feat. Mark)"), ("Tasso", "Таю")]
+
+
+def test_queue_is_not_filtered_and_taste_comes_from_used_rows():
+    st = {"done": {}, "skipped": {}}
+    fetch_songs.record_used(st, ["Guf - Дно.mp3", "Oxxxymiron - Тысячелетний герой.mp3"], "2026-11-16")
+    assert fetch_songs.taste_artists(st) == {"guf", "oxxxymiron"}
+    assert [w["artist"] for w in fetch_songs.wanted({}, "Some Latin | Song | | |\n", lambda c: [], set())] == ["Some Latin"]
+
+
+def test_prune_lists_misfit_downloads_and_forgets_them(tmp_path):
+    f = tmp_path / "m.md"
+    st = {"done": {}, "skipped": {}}
+    for song, file in [("Taylor Swift - The Fate of Ophelia", "Taylor Swift - The Fate of Ophelia.mp3"), ("Tasso - Таю", "Tasso - Таю.mp3")]:
+        a, t = fetch_songs.parse_name(song)
+        st["done"][fetch_songs.key(a, t)] = {"status": "downloaded", "date": "2026-11-16", "song": song, "file": file, "detail": ""}
+    fetch_songs.save_memory(f, st)
+    a = run_args(tmp_path)
+    a.state, a.prune = str(f), str(tmp_path / "prune.txt")
+    fetch_songs.run(a, {}, {}, lambda c: 1 / 0)
+    assert (tmp_path / "prune.txt").read_text(encoding="utf-8").splitlines() == ["Taylor Swift - The Fate of Ophelia.mp3", "Taylor Swift - The Fate of Ophelia.mp3.license.json"]
+    back = fetch_songs.load_memory(f)
+    assert len(back["done"]) == 1 and len(back["skipped"]) == 1   # Таю stays, Swift is remembered as skipped (never fetched again)

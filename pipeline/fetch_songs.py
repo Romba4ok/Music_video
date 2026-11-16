@@ -65,18 +65,31 @@ def record_used(st, names, today):
             st["skipped"].pop(key(a, t), None)
 
 
-def wanted(cfg, queue_text="", fetch_chart=None):
-    """[{artist, title, sec}] queue first (curated by brief.md), then the chart. Chart failure = queue only."""
+def taste_artists(st):
+    """Artists of songs already made (memory `used`): the owner's taste, letters only, lowercase."""
+    return {re.sub(r"[\W_]+", "", parse_name(r["song"])[0].lower()) for r in st["done"].values() if r["status"] == "used" and parse_name(r["song"])[0]}
+
+
+def fits(artist, title, taste):
+    """Russian-language chart song: Cyrillic in artist or title, or an artist the owner already uses (Latin spelling, e.g. Guf, Jah Khalib)."""
+    return bool(re.search("[а-яё]", f"{artist}{title}".lower())) or re.sub(r"[\W_]+", "", artist.lower()) in taste
+
+
+def wanted(cfg, queue_text="", fetch_chart=None, taste=frozenset()):
+    """[{artist, title, sec}] queue first (curated by brief.md), then the chart songs that fit (Russian / owner's artists; owner's artists first).
+    Chart failure = queue only."""
     out = [{"artist": e["artist"], "title": e["title"], "sec": 0} for e in parse_queue(queue_text)]
     try:
         rows = (fetch_chart or _chart)(cfg)
     except Exception as e:
         print("songs: chart unavailable:", safe_err(e), file=sys.stderr)
         rows = []
+    own, other = [], []
     for r in rows:
         a, t = parse_name(r["title"])
-        if a and t:
-            out.append({"artist": a, "title": t, "sec": r.get("sec", 0)})
+        if a and t and fits(a, t, taste):
+            (own if re.sub(r"[\W_]+", "", a.lower()) in taste else other).append({"artist": a, "title": t, "sec": r.get("sec", 0)})
+    out += own + other
     seen, uniq = set(), []
     for w in out:
         if key(w["artist"], w["title"]) not in seen:
@@ -145,10 +158,20 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep):
         save_memory(state_f, state)
         print(json.dumps({"recorded_used": len(state["done"])}, ensure_ascii=False))
         return []
+    taste = taste_artists(state)
+    if a.prune:  # songs this job downloaded earlier that do not fit (not Russian / not the owner's artists): the workflow deletes these files from Drive/audio
+        bad = [(k, r) for k, r in state["done"].items() if r["status"] == "downloaded" and r["file"] and not fits(*parse_name(r["song"]), taste)]
+        Path(a.prune).write_text("".join(f'{r["file"]}\n{r["file"]}.license.json\n' for _, r in bad), encoding="utf-8")
+        for k, r in bad:
+            state["done"].pop(k)
+            state["skipped"][k] = {**r, "status": "skipped", "date": today, "file": "", "detail": "удалена: не на русском и не из ваших артистов"}
+        save_memory(state_f, state)
+        print(json.dumps({"pruned": [r["file"] for _, r in bad]}, ensure_ascii=False))
+        return []
     have = [key(*parse_name(os.path.splitext(l.strip())[0])) for l in open(a.have_file, encoding="utf-8") if l.strip()] if a.have_file and os.path.exists(a.have_file) else []
     q = Path(a.queue)
     got, tries, dead = [], 0, set()
-    for w in wanted(cfg, q.read_text(encoding="utf-8") if q.exists() else "", fetch_chart):
+    for w in wanted(cfg, q.read_text(encoding="utf-8") if q.exists() else "", fetch_chart, taste):
         k = key(w["artist"], w["title"])
         if len(got) >= a.max or tries >= a.tries:
             break
@@ -177,6 +200,7 @@ def main(argv):
     ap.add_argument("--out", default="out/fetched")
     ap.add_argument("--have-file", help="names already in Drive (audio/ and done/), one per line")
     ap.add_argument("--state", default="out/songs-memory.md", help="memory (md table): used, downloaded and skipped songs")
+    ap.add_argument("--prune", help="write to this file the names of earlier downloads that do not fit (not Russian / not your artists), forget them in the memory, search nothing")
     ap.add_argument("--record-used", help="text file of processed audio names (Drive/done): only add them to the memory as `used`, search nothing")
     ap.add_argument("--queue", default=str(ROOT / "accounts" / "main" / "queue.md"))
     ap.add_argument("--max", type=int, default=5, help="max new songs per run")
