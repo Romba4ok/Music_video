@@ -5,6 +5,7 @@ Cards appear shortly BEFORE their first word and leave after their last word; no
 import math
 
 LEAD, HOLD, GAP = 0.25, 0.35, 0.05
+MIN_CARD = 0.5  # qa cards_readable: a card shorter than this fails
 MIN_MARGIN = 0.12  # a video must be this much longer than min_len before rendering: frame rounding and the 0.01 s rounding of the plan must not push it under
 
 
@@ -92,8 +93,11 @@ def build_scenes(analysis, song, cfg, intro=0.0, widgets=None):
             card["widget"] = wd
         cards.append(card)
     for a, b in zip(cards, cards[1:]):
+        if b["start"] < a["start"] + MIN_CARD + GAP:  # two cards start together (overlapping voices, collapsed whisper times): the next one waits so this one stays readable and never overlaps
+            b["start"] = round(a["start"] + MIN_CARD + GAP, 3)
+            b["end"] = max(b["end"], round(b["start"] + MIN_CARD, 3))
         if a["end"] > b["start"] - GAP:
-            a["end"] = round(max(a["start"] + 0.2, b["start"] - GAP), 3)
+            a["end"] = round(b["start"] - GAP, 3)
     duration = round(length + hold + tail, 2)
     cards[-1]["end"] = round(min(cards[-1]["end"], length + 0.3), 3)
     outro_start = round(max(cards[-1]["end"] + 0.1, length + 0.3 + hold), 3)  # the real music after the last line plays under the last card

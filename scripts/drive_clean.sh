@@ -4,6 +4,12 @@
 # FORCE=1 cleans even when songs are still waiting in Drive/audio (those songs are never touched).
 set -eo pipefail
 mkdir -p out
+if [ -n "${REMOVE:-}" ]; then  # one named song from Drive/audio (+ its attribution file); goes to the Drive trash
+  case "$REMOVE" in */*|*..*) echo "bad file name: $REMOVE"; exit 1;; esac
+  rclone deletefile "gd:audio/$REMOVE"
+  rclone deletefile "gd:audio/$REMOVE.license.json" 2>/dev/null || true
+  echo "Removed from Drive/audio (Drive trash): $REMOVE" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+fi
 if [ "${FORCE:-0}" != "1" ] && [ -n "$(rclone lsf gd:audio | grep -iE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' || true)" ]; then
   echo "Songs are still in Drive/audio: nothing to clean"; exit 0
 fi

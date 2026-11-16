@@ -3,6 +3,10 @@ name: drive-clean
 # Songs waiting in Drive/audio and unsent drafts in Drive/ready are never deleted. Deleted files go to the Drive trash (~30 days).
 on:
   workflow_dispatch:
+    inputs:
+      remove:
+        description: "optional: exact file name in Drive/audio to delete (goes to the Drive trash), e.g. Guf - Uragan.mp3"
+        default: ""
 concurrency:
   group: generate   # never clean while videos are being made
   cancel-in-progress: false
@@ -31,4 +35,6 @@ jobs:
           echo "::add-mask::$RT"
           python -c "import json,os;print('RCLONE_CONFIG_GD_TOKEN='+json.dumps({'access_token':'','token_type':'Bearer','refresh_token':os.environ['RT'],'expiry':'2000-01-01T00:00:00Z'}))" >> "$GITHUB_ENV"
       - name: Clean
+        env:
+          REMOVE: ${{ inputs.remove }}
         run: FORCE=1 bash scripts/drive_clean.sh

@@ -170,3 +170,16 @@ def test_other_modes_and_the_sync_hint_follow_the_lengthened_plan():
     short = script_gen.build_scenes(_analysis([_line(30.0, 42.58)], 0, 0), SONG, CFG)
     sync = build.sync_info({"song": SONG}, short)  # tiktok mode: the official sound is cut in earlier by exactly the added lead-in
     assert sync["sound_start_sec"] == short["audio_start"] < 30.0
+
+
+def test_cards_that_start_together_stay_readable_and_never_overlap():
+    """Regression (Guf - Uragan, QA: no_card_overlap [0] + cards_readable too short [0]): card 1 started 0.1 s after card 0, the old overlap fix cut
+    card 0 to 0.2 s past its own start, longer than the gap, so it overlapped card 1 and was too short to read."""
+    first = _line(30.0, 33.0, "а")
+    second = _line(30.1, 33.0, "б")  # an overlapping voice: starts almost together with the first line
+    third = _line(34.0, 37.0, "в")
+    lines = [first, second, third]
+    plan = script_gen.build_scenes(_analysis(lines, 0, 2), SONG, CFG)
+    cards = [s for s in plan["scenes"] if s["role"] == "lyric"]
+    assert all(c["end"] - c["start"] >= 0.5 - 1e-6 for c in cards)
+    assert all(x["end"] <= y["start"] + 1e-6 for x, y in zip(plan["scenes"], plan["scenes"][1:]))
