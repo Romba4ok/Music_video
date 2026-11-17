@@ -55,6 +55,8 @@ def test_jamendo_needs_key():
 
 # ---- download policy
 class FakeResp:
+    status_code = 200
+
     def __init__(self, data): self.data = data
     def __enter__(self): return self
     def __exit__(self, *a): pass

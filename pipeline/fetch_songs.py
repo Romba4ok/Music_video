@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import download, song_ideas, sources
 from .batch import parse_queue
-from .common import ROOT, license_ok, load_config, parse_name, safe_err
+from .common import ROOT, http_summary, license_ok, load_config, parse_name, safe_err
 
 RETRY_DAYS = 14  # a skipped song is searched again after this long (new uploads appear)
 MIN_SEC, MAX_SEC = 90, 600  # full composition: not a 30 s preview, not a mix
@@ -379,7 +379,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     save_memory(state_f, state)
     report = {"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
-              "skip_reasons": skip_kinds, "source_states": src_states, "signature": sig, "force_retry": bool(a.force_retry)}
+              "skip_reasons": skip_kinds, "source_states": src_states, "http": http_summary(), "signature": sig, "force_retry": bool(a.force_retry)}
     print(json.dumps(report, ensure_ascii=False))
     return got
 

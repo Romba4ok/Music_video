@@ -93,6 +93,21 @@ def _archive(q, n, cfg, env):
     return out
 
 
+def _ccmixter(q, n, cfg, env):
+    """ccMixter public JSON query API: no key, no login. Every upload carries its own license URL (the policy filter in search() decides)."""
+    out = []
+    for d in get_json("https://ccmixter.org/api/query", {"f": "json", "search": q, "search_type": "all", "limit": n}):
+        for f in d.get("files") or []:
+            fi = f.get("file_format_info") or {}
+            if fi.get("default-ext") == "mp3" and f.get("download_url"):
+                m, _, s = str(fi.get("ps") or "0:0").partition(":")
+                out.append(Candidate("ccmixter", d.get("upload_name") or "", d.get("user_real_name") or d.get("user_name") or "", f["download_url"],
+                                     d.get("license_url") or "", d.get("license_url") or "", d.get("file_page_url") or "",
+                                     sec=int(m) * 60 + int(s) if m.isdigit() and s.isdigit() else 0))
+                break
+    return out
+
+
 def _soundcloud(q, n, cfg, env):
     """Official API; only tracks whose uploader enabled downloads. UNVERIFIED against the live API (no client id here)."""
     key = env.get("SOUNDCLOUD_CLIENT_ID")
@@ -104,7 +119,7 @@ def _soundcloud(q, n, cfg, env):
             for r in data if r.get("downloadable") and r.get("download_url")]
 
 
-SEARCHERS = {"local": _local, "openverse": _openverse, "jamendo": _jamendo, "archive": _archive, "soundcloud": _soundcloud}
+SEARCHERS = {"local": _local, "openverse": _openverse, "jamendo": _jamendo, "archive": _archive, "ccmixter": _ccmixter, "soundcloud": _soundcloud}
 
 
 # a remix/cover/preview of the wanted song is a different recording: refused unless the wanted title itself says so

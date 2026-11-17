@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from .common import Refused, license_ok, load_config, safe_err, status
+from .common import HTTP_LOG, Refused, license_ok, load_config, safe_err, status
 
 MAX_BYTES = 80 * 1024 * 1024
 
@@ -44,7 +44,8 @@ def download(c, dest_dir, cfg=None, http=requests):
     ext = ext if ext in (".mp3", ".wav", ".ogg", ".m4a", ".flac") else ".mp3"
     out = dest / f"{_slug(c.artist)} - {_slug(c.title)}{ext}"
     size = 0
-    with http.get(c.url, stream=True, timeout=30) as r:
+    with http.get(c.url, stream=True, timeout=30, headers={"User-Agent": "vybex-fetch/1.0"}) as r:
+        HTTP_LOG.append((urlparse(c.url).hostname, r.status_code))
         r.raise_for_status()
         with open(out, "wb") as f:
             for chunk in r.iter_content(65536):

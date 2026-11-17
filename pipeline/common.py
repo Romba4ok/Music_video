@@ -55,16 +55,35 @@ def license_ok(s, allowed):
     return license_key(s) in set(allowed)
 
 
+HTTP_LOG = []  # one row per real request: (host, HTTP status or error name); the songs report summarises it, so "which sites were really asked" is a fact
+
+
 def get_json(url, params=None, headers=None, timeout=20, retries=2):
     last = None
+    host = re.sub(r"^https?://([^/:]+).*", r"\1", url)
     for _ in range(retries + 1):
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            r = requests.get(url, params=params, headers={"User-Agent": "vybex-fetch/1.0", **(headers or {})}, timeout=timeout)
+            HTTP_LOG.append((host, r.status_code))
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
+            if getattr(e, "response", None) is None:
+                HTTP_LOG.append((host, type(e).__name__))
             last = e
+            if getattr(getattr(e, "response", None), "status_code", 0) in (401, 403, 404):
+                break  # access closed / not there: a retry cannot change it, and nothing is bypassed
     raise last
+
+
+def http_summary():
+    """HTTP_LOG -> {host: {"requests": n, "statuses": {"200": n, "ConnectTimeout": n}}}"""
+    out = {}
+    for host, st in HTTP_LOG:
+        h = out.setdefault(host, {"requests": 0, "statuses": {}})
+        h["requests"] += 1
+        h["statuses"][str(st)] = h["statuses"].get(str(st), 0) + 1
+    return out
 
 
 def parse_name(stem):
