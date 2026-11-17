@@ -234,3 +234,21 @@ def test_a_preview_file_is_refused_in_auto_mode_and_allowed_in_tiktok_mode(tmp_p
     entry = {"artist": "A", "title": "T", "popular_line": "", "audio_file": "A - T.mp3"}
     assert batch.fetch_audio(entry, cfg, "auto")[0] is None
     assert batch.fetch_audio(entry, cfg, "tiktok")[0] == tmp_path / "A - T.mp3"
+
+
+def test_fetch_audio_never_downloads_a_track_that_is_not_the_wanted_song(tmp_path, monkeypatch):
+    """A fuzzy source search ('bushido' -> 'Bushido Flava - Kutinava') must not become the sound of 'BUSHIDO ZHO - днями и ночами'."""
+    from pipeline import batch, sources
+    lic = "https://creativecommons.org/licenses/by/4.0/"
+    wrong = sources.Candidate("jamendo", "Kutinava", "Bushido Flava", "https://x/a.mp3", lic, sec=200)
+    right = sources.Candidate("jamendo", "днями и ночами", "BUSHIDO ZHO", "https://x/b.mp3", lic, sec=200)
+    monkeypatch.setattr(batch, "ROOT", tmp_path)
+    got = []
+    monkeypatch.setattr(batch.download, "download_first", lambda cands, ad, cfg: (got.extend(c.title for c in cands) or None, []))
+    entry = {"artist": "BUSHIDO ZHO", "title": "днями и ночами", "popular_line": "", "audio_file": ""}
+    monkeypatch.setattr(batch.sources, "search", lambda q, cfg, n=5: ([wrong], [{"source": "jamendo", "state": "ok", "detail": "1/1"}]))
+    path, sts = batch.fetch_audio(entry, {"audio_dir": "."}, "auto")
+    assert path is None and got == [] and any(s["source"] == "match" for s in sts)    # nothing downloaded at all
+    monkeypatch.setattr(batch.sources, "search", lambda q, cfg, n=5: ([wrong, right], []))
+    batch.fetch_audio(entry, {"audio_dir": "."}, "auto")
+    assert got == ["днями и ночами"]

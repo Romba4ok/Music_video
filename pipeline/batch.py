@@ -149,8 +149,12 @@ def fetch_audio(entry, cfg, mode):
             return None, [{"source": "local", "state": "refused", "detail": "official preview: analysis only, run with mode tiktok (sound is added in TikTok)"}]
         return download.ensure_audio(ad / entry["audio_file"], _declared(ad, entry["audio_file"])), [
             {"source": "local", "state": "ok", "detail": entry["audio_file"]}]
-    cands, sts = sources.search(f'{entry["artist"]} {entry["title"]}', cfg, n=5)
-    path, dsts = download.download_first(cands, ad, cfg)
+    cands, sts = sources.search(f'{entry["artist"]} {entry["title"]}', cfg, n=8)
+    # a source search is fuzzy ("bushido" finds "Bushido Flava - Kutinava"): only a candidate that IS the wanted song (artist, title, no remix) may become the sound
+    good = [c for c in cands if c.source == "local" or sources.matches(entry["artist"], entry["title"], c)]
+    if len(good) < len(cands):
+        sts = sts + [{"source": "match", "state": "refused", "detail": f"{len(cands) - len(good)} of {len(cands)} found tracks are not this song"}]
+    path, dsts = download.download_first(good, ad, cfg)
     return path, sts + dsts
 
 

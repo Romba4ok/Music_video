@@ -127,7 +127,10 @@ jobs:
           [ -d out/$D/ready ] && rclone copy out/$D/ready gd:ready/$D
           [ -f out/$D/report.json ] && rclone copyto out/$D/report.json gd:ready/$D/report.json
           [ -f out/$D/report.json ] && jq -r '.songs[]|select(.stages.render=="ok")|.audio_name' out/$D/report.json | while read -r f; do
-            [ -n "$f" ] && rclone moveto "gd:audio/$f" "gd:done/$f"
+            [ -z "$f" ] && continue
+            if rclone lsf gd:audio | grep -qxF "$f"; then rclone moveto "gd:audio/$f" "gd:done/$f"
+            elif [ -f "accounts/main/audio/$f" ]; then rclone copyto "accounts/main/audio/$f" "gd:done/$f"   # the song came from the repo / was fetched inside this job: it is still remembered as processed
+            fi
           done
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
           [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
