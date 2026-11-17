@@ -80,6 +80,7 @@ jobs:
           { echo '### Source probe (query "piano")'; echo '```'; python -m pipeline.sources --probe piano; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Search and download (allowed sources only)
         env:
+          AUDIO_PROXY_URL: ${{ secrets.AUDIO_PROXY_URL }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
           SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}

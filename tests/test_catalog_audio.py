@@ -1,11 +1,19 @@
 import json
+import base64
+import threading
 from argparse import Namespace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 import requests
 
 from pipeline import catalog_audio, common, download, fetch_url
+
+
+@pytest.fixture(autouse=True)
+def no_audio_proxy(monkeypatch):
+    monkeypatch.delenv("AUDIO_PROXY_URL", raising=False)
 
 
 HITMO = """<ul><li data-musmeta='{"artist":"Xcho","title":"Ветер","url":"/get/cuts/preview.mp3"}'>
@@ -185,3 +193,97 @@ def test_403_download_is_rejected_without_retry_or_credentials(monkeypatch):
                         {**fetch_url.DEFAULTS, "allowed_hosts": ["ru.hitmoz.org"]}, client)
     assert len(calls) == 1
     assert "Authorization" not in calls[0][1].get("headers", {})
+
+
+def test_audio_proxy_is_used_for_search_and_each_download_redirect(monkeypatch):
+    proxy = "http://proxy-user:proxy-password@proxy.example:8080"
+    monkeypatch.setenv("AUDIO_PROXY_URL", proxy)
+    monkeypatch.setenv("HTTPS_PROXY", "http://other-proxy.example:8080")
+    calls = []
+
+    class HTTP:
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if "/search?" in url:
+                return Response(url, HITMO)
+            if "ru.hitmoz.org" in url:
+                return Response(url, code=302, headers={"Location": "https://cdn12.deliciousoranges.com/song.mp3"})
+            return Response(url)
+
+    transport = HTTP()
+    client = catalog_audio.CatalogClient(transport)
+    assert client.search("hitmo", "Xcho Ветер")
+    response = fetch_url._open("https://ru.hitmoz.org/get/music/song.mp3",
+                              {**fetch_url.DEFAULTS, "allowed_hosts": catalog_audio.DOWNLOAD_HOSTS["hitmo"]}, client)
+    assert response.status_code == 200 and len(calls) == 3
+    for _, kwargs in calls:
+        assert kwargs["proxies"] == {"http": proxy, "https": proxy}
+        assert "verify" not in kwargs
+    transport.get("https://www.googleapis.com/drive/v3/files")
+    assert "proxies" not in calls[-1][1]
+
+
+def test_download_candidate_passes_proxy_client_to_the_actual_transfer(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUDIO_PROXY_URL", "http://proxy.example:8080")
+    candidate = catalog_audio.parse_tracks(HITMO, "hitmo", "https://ru.hitmoz.org/search?q=Xcho")[0]
+    clients = []
+
+    def fetch(url, artist, title, destination, cfg, **kwargs):
+        clients.append(kwargs["http"])
+        return "Xcho - Ветер.mp3", "digest", "detail"
+
+    monkeypatch.setattr(fetch_url, "fetch_download_only", fetch)
+    result = catalog_audio.download_candidate(candidate, tmp_path, common.load_config())
+    assert result.name == "Xcho - Ветер.mp3"
+    assert clients[0].proxies["https"] == "http://proxy.example:8080"
+
+
+@pytest.mark.parametrize("value", [
+    "proxy.example:8080", "socks5://proxy.example:1080", "http://user:secret@proxy.example",
+    "http://user:secret@proxy.example:bad", "http://proxy.example:8080/?secret=private",
+])
+def test_invalid_proxy_fails_without_disclosing_its_value(value, monkeypatch):
+    monkeypatch.setenv("AUDIO_PROXY_URL", value)
+    with pytest.raises(common.Refused) as exc:
+        catalog_audio.CatalogClient()
+    assert value not in str(exc.value) and "secret" not in str(exc.value)
+
+
+def test_proxy_credentials_are_removed_from_403_diagnostics(monkeypatch, capsys):
+    proxy = "https://proxy-user:p%40ssword@proxy.example:8443"
+    monkeypatch.setenv("AUDIO_PROXY_URL", proxy)
+    response = Response("https://sefon.pro/", f"Rejected {proxy} p@ssword proxy-user", code=403,
+                        headers={"Via": "proxy.example", "Proxy-Authorization": "Basic private"})
+    catalog_audio.log_forbidden(response, response.url)
+    output = capsys.readouterr().err
+    assert all(secret not in output for secret in (proxy, "p%40ssword", "p@ssword", "proxy-user", "proxy.example", "private"))
+    assert json.loads(output)["headers"]["Proxy-Authorization"] == "[redacted]"
+
+
+def test_requests_really_connects_to_authenticated_proxy_without_direct_fallback(monkeypatch):
+    connections = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_CONNECT(self):
+            connections.append((self.path, self.headers.get("Proxy-Authorization")))
+            self.send_response(407)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = HTTPServer(("127.0.0.1", 0), Proxy)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        monkeypatch.setenv("AUDIO_PROXY_URL", f"http://proxy-user:proxy-password@127.0.0.1:{server.server_port}")
+        monkeypatch.setenv("HTTPS_PROXY", "http://unreachable.invalid:1")
+        with pytest.raises(requests.exceptions.ProxyError):
+            catalog_audio.CatalogClient().get("https://sefon.pro/search/?q=test", timeout=2)
+        authorization = "Basic " + base64.b64encode(b"proxy-user:proxy-password").decode()
+        assert connections == [("sefon.pro:443", authorization)]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

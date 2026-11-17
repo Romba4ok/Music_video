@@ -7,12 +7,13 @@ python -m pipeline.catalog_audio --inspect path/to/audio.mp3
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import unquote, urlencode, urljoin, urlsplit
 
 import requests
 
@@ -114,14 +115,26 @@ def parse_tracks(html, site, page):
     return parser.results
 
 
+def redact_proxy(value):
+    proxy = os.environ.get("AUDIO_PROXY_URL", "").strip()
+    if not proxy:
+        return value
+    parsed = urlsplit(proxy)
+    secrets = {proxy, parsed.netloc, parsed.hostname, parsed.username, parsed.password,
+               unquote(parsed.username or ""), unquote(parsed.password or "")}
+    for secret in sorted(filter(None, secrets), key=len, reverse=True):
+        value = value.replace(secret, "[redacted]")
+    return value
+
+
 def log_forbidden(response, url):
     """Record the site's explanation without cookies or authorization values."""
     parsed = urlsplit(url)
     headers = {
-        name: "[redacted]" if re.search(r"cookie|authorization|token|secret|api[-_]key", name, re.I) else value
+        name: "[redacted]" if re.search(r"cookie|authorization|token|secret|api[-_]key", name, re.I) else redact_proxy(value)
         for name, value in response.headers.items()
     }
-    body = response.text
+    body = redact_proxy(response.text)
     print(json.dumps({
         "http_diagnostic": 403,
         "url": f"{parsed.scheme}://{parsed.hostname}{parsed.path}",
@@ -136,11 +149,23 @@ class CatalogClient:
 
     def __init__(self, http=requests):
         self.http = http
+        proxy = os.environ.get("AUDIO_PROXY_URL", "").strip()
+        self.proxies = None
+        if proxy:
+            try:
+                parsed = urlsplit(proxy)
+                valid = (parsed.scheme in ("http", "https") and parsed.hostname and parsed.port
+                         and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise Refused("AUDIO_PROXY_URL must be an http:// or https:// proxy URL with a host and port")
+            self.proxies = {"http": proxy, "https": proxy}
 
     def request(self, url):
         for attempt in range(3):
             try:
-                response = self.http.get(url, headers={"User-Agent": UA}, timeout=(6, 15), allow_redirects=False)
+                response = self.get(url, headers={"User-Agent": UA}, timeout=(6, 15), allow_redirects=False)
                 HTTP_LOG.append((urlsplit(url).hostname, response.status_code))
                 if response.status_code == 403:
                     log_forbidden(response, url)
@@ -171,6 +196,8 @@ class CatalogClient:
 
     def get(self, url, **kwargs):
         """The direct downloader checks each redirect host before requesting it."""
+        if self.proxies:
+            kwargs["proxies"] = self.proxies
         return self.http.get(url, **kwargs)
 
 
@@ -187,7 +214,8 @@ def download_candidate(candidate, destination, cfg):
         raise Refused("no public full-file URL, protected player URLs are excluded")
     config = {**cfg, "direct_urls": {**cfg.get("direct_urls", {}),
                                     "allowed_hosts": DOWNLOAD_HOSTS[candidate.source]}}
-    name, _, _ = fetch_url.fetch_download_only(candidate.url, candidate.artist, candidate.title, destination, config)
+    name, _, _ = fetch_url.fetch_download_only(candidate.url, candidate.artist, candidate.title, destination, config,
+                                              http=CatalogClient())
     return Path(destination) / name
 
 
