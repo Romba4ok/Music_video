@@ -26,6 +26,7 @@
   },
   "trends": {"region": "KZ", "days": 7, "order": ["research", "local"], "local_file": "data/trends.json"},
   "author": {"enabled": true, "model": "sonnet", "timeout": 900},
+  "official": {"enabled": true, "max_pages": 6, "timeout": 15},
   "direct_urls": {"allowed_hosts": ["archive.org", "upload.wikimedia.org", "freesound.org", "jamendo.com", "ccmixter.org"], "min_sec": 60, "max_sec": 600, "max_mb": 80, "timeout": 30, "max_redirects": 5, "retries": 2},
   "buffer": {"mode": "now", "silent": "hold", "channel_id": "", "timezone": "Asia/Almaty", "slots": ["12:00", "17:00", "21:00"], "posts_per_day": 3, "keep_days": 7, "delete_song_after_sent": false, "max_mb": 100, "max_sec": 180}
 }

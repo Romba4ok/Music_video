@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import download, song_ideas, sources
+from . import download, official, song_ideas, sources
 from .batch import parse_queue
 from .common import ROOT, http_summary, license_ok, load_config, parse_name, safe_err
 
@@ -53,7 +53,7 @@ def save_memory(path, st, keep_skipped=300):
     cell = lambda x: " ".join(str(x).replace("|", "/").split())
     rows = sorted(st["done"].values(), key=lambda r: r["date"]) + sorted(st["skipped"].values(), key=lambda r: r["date"])[-keep_skipped:]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    lines = [f'| {r["status"]} | {r["date"]} | {cell(r["song"])} | {cell(r["file"])} | {cell(r["detail"])[:160]} |' for r in rows]
+    lines = [f'| {r["status"]} | {r["date"]} | {cell(r["song"])} | {cell(r["file"])} | {cell(r["detail"])[:360]} |' for r in rows]
     Path(path).write_text(HEAD + "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
@@ -257,7 +257,7 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
     return got
 
 
-ALGO_VERSION = "2026-11-17.1"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
+ALGO_VERSION = "2026-11-17.2"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
 
 
 def search_signature(cfg, env=None):
@@ -266,7 +266,7 @@ def search_signature(cfg, env=None):
     env = os.environ if env is None else env
     cred = sorted(n for n in ("JAMENDO_CLIENT_ID", "SOUNDCLOUD_CLIENT_ID", "YOUTUBE_API_KEY") if env.get(n))
     blob = json.dumps([ALGO_VERSION, cfg.get("sources", {}).get("order"), sorted(cfg.get("licenses_allowed", [])),
-                       sorted((cfg.get("direct_urls") or {}).get("allowed_hosts", [])), cred], ensure_ascii=False)
+                       sorted((cfg.get("direct_urls") or {}).get("allowed_hosts", [])), cred, (cfg.get("official") or {}).get("enabled", True)], ensure_ascii=False)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:8]
 
 
@@ -297,7 +297,7 @@ def needs_recheck(sk, sig, today, force=False):
     return age >= RETRY_DAYS * 86400
 
 
-def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None):
+def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None, official_try=None):
     cfg = cfg or load_config()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -326,6 +326,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     sig = search_signature(cfg)
     cands = wanted(cfg, qtext, fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
+    links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
     for w in cands:
         k = key(w["artist"], w["title"])
@@ -355,9 +356,20 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
                 name, why = None, f"ссылка: {str(e)[:150]}"
         else:
             name, why = (None, read_tag(sk["detail"])[3]) if known_none else fetch_one(w, cfg, out, searchers, dead=dead)  # no licensed full file is already known: go straight to the preview
+        song = f'{w["artist"]} - {w["title"]}'
+        official_note = ""
+        if not name and not known_none and not w.get("url") and cfg.get("official", {}).get("enabled", True):  # stage 2: the artist's own pages (docs/rights.md)
+            off = (official_try or official.try_song)(w, cfg, out, known_sha(state))
+            links += [(song, p, n) for p, n in off["links"]]
+            if off["file"]:
+                name, why = off["file"], off["detail"]
+            else:
+                official_note = off["reason"] or ("ссылки сохранены: %d" % len(off["links"]))
+                why = f"{why}; official: {official_note}"
         if not name and want_preview:
             name, why = fetch_preview(w, out, None if preview_find is None else preview_find(w))
-        song = f'{w["artist"]} - {w["title"]}'
+        per_song.append({"song": song, "result": "downloaded" if name else ("link_saved" if any(l[0] == song for l in links) else "skipped"),
+                         "file": name or "", "reason": "" if name else why[:400], "links": [p for s, p, n in links if s == song]})
         if name:
             state["done"][k] = {"status": "downloaded", "date": today, "song": song, "file": name, "detail": why}
             state["skipped"].pop(k, None)
@@ -377,7 +389,9 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             got.append(name)
     shutil.rmtree(out / "_tmp", ignore_errors=True)
     save_memory(state_f, state)
-    report = {"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
+    if links:
+        official.save_links(state_f.with_name("song-links.md"), links, today)
+    report = {"songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
               "skip_reasons": skip_kinds, "source_states": src_states, "http": http_summary(), "signature": sig, "force_retry": bool(a.force_retry)}
     print(json.dumps(report, ensure_ascii=False))

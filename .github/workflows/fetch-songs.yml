@@ -56,6 +56,7 @@ jobs:
           { rclone lsf gd:audio; rclone lsf gd:done; } | grep -v '/$' > out/have.txt || true
           if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'songs.md'; then rclone copyto gd:state/songs.md out/songs-memory.md
           else echo "no memory in Drive yet: starting from the repo seed"; cp accounts/main/songs-memory.md out/songs-memory.md; fi
+          if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'song-links.md'; then rclone copyto gd:state/song-links.md out/song-links.md; fi
           if echo "$ROOT_LS" | grep -qx 'queue.txt'; then rclone copyto gd:queue.txt accounts/main/queue.md; else echo "no Drive queue.txt: repo queue.md is used"; fi
       - name: Remove earlier downloads that do not fit (not Russian, not your artists)
         shell: bash
@@ -81,7 +82,8 @@ jobs:
         shell: bash
         run: |
           if [ -n "$(ls -A out/fetched 2>/dev/null)" ]; then rclone copy out/fetched gd:audio; fi
+          if [ -f out/song-links.md ]; then rclone copyto out/song-links.md gd:state/song-links.md; fi   # pages of songs found on the artists' own sites (no file to download)
           rclone copyto out/songs-memory.md gd:state/songs.md   # after the audio upload: a failed upload is retried tomorrow
-          tail -n 1 out/songs.json | python -c "import json,sys;r=json.load(sys.stdin);print('Candidates %d (eligible %d, blocked by a recent identical search %d); checked %d (of them re-checked skipped: %d), not reached %d; downloaded %d; skipped in memory %d; force-retry %s' % (r['candidates'], r['eligible'], r['blocked_recent'], r['checked'], r['rechecked_skipped'], r['left_unchecked'], len(r['downloaded']), r['skipped_total'], r['force_retry'])); print('Skip reasons:', r['skip_reasons'] or '-'); print('Source answers:', r['source_states'] or '-'); [print('- '+f) for f in r['downloaded']]" >> "$GITHUB_STEP_SUMMARY"
+          tail -n 1 out/songs.json | python -c "import json,sys;r=json.load(sys.stdin);print('Candidates %d (eligible %d, blocked by a recent identical search %d); checked %d (of them re-checked skipped: %d), not reached %d; downloaded %d; skipped in memory %d; force-retry %s' % (r['candidates'], r['eligible'], r['blocked_recent'], r['checked'], r['rechecked_skipped'], r['left_unchecked'], len(r['downloaded']), r['skipped_total'], r['force_retry'])); print('Skip reasons:', r['skip_reasons'] or '-'); print('Source answers:', r['source_states'] or '-'); [print('- '+f) for f in r['downloaded']]; print('Per song:'); [print('- %s: %s %s %s' % (s['song'], s['result'], s['file'] or s['reason'][:220], ' '.join(s['links'][:2]))) for s in r.get('songs', [])]" >> "$GITHUB_STEP_SUMMARY"
           echo "Memory: Drive/state/songs.md" >> "$GITHUB_STEP_SUMMARY"
           { echo "Drive/audio now:"; { rclone lsf gd:audio | grep -v '\.license\.json$' || true; } | sed 's/^/- /'; } | tee -a "$GITHUB_STEP_SUMMARY"
