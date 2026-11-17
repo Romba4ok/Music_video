@@ -75,7 +75,7 @@ def stream_audio(open_response, path, max_bytes, retries=2):
             time.sleep(2 ** attempt)
 
 
-def download(c, dest_dir, cfg=None, http=requests):
+def download(c, dest_dir, cfg=None, http=requests, *, download_only=False):
     cfg = cfg or load_config()
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
@@ -84,7 +84,7 @@ def download(c, dest_dir, cfg=None, http=requests):
         if Path(c.local_path).resolve() != out.resolve():
             shutil.copy2(c.local_path, out)
         return ensure_audio(out, rights_confirmed=c.rights_declared)
-    if not license_ok(c.license or c.license_url, cfg["licenses_allowed"]):
+    if not download_only and not license_ok(c.license or c.license_url, cfg["licenses_allowed"]):
         raise Refused(f"license not allowed: {c.license!r}")
     if urlparse(c.url).scheme != "https":
         raise Refused("only https downloads")
@@ -110,8 +110,11 @@ def download(c, dest_dir, cfg=None, http=requests):
         partial = Path(staging) / "download.part"
         digest = stream_audio(open_response, partial, MAX_BYTES)
         staged = partial.rename(Path(staging) / f"{_slug(c.artist)} - {_slug(c.title)}{suffix}")
-        _sidecar(staged, {"attribution": c.attribution(), "license": c.license,
-                          "source": c.landing or c.url, "sha256": digest})
+        metadata = {"attribution": c.attribution(), "license": c.license,
+                    "source": c.landing or c.url, "sha256": digest}
+        if download_only:
+            metadata.update(usage_rights="not_evaluated", download_only=True, analysis_only=True)
+        _sidecar(staged, metadata)
         return publish_audio(staged, staged, dest)
 
 

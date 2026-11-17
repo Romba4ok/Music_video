@@ -130,8 +130,11 @@ def to_mp3(src, dst):
     return dst
 
 
-def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, known_sha=()):
+def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, known_sha=(), download_only=False):
     """Try matching downloadable tracks in source order until one passes validation."""
+    if download_only and dl is None:
+        from .catalog_audio import download_candidate
+        dl = download_candidate
     dl, check = dl or download.download, check or download.check_audio
     dead = set() if dead is None else dead
     states = [f"{name}:unavailable" for name in sorted(dead)]
@@ -143,7 +146,7 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
     candidate_count = 0
     failures = []
     track = (w["artist"], w["title"])
-    batches = sources.search_batches(" ".join(track), cfg, n=8, searchers=searchers, track=track)
+    batches = sources.search_batches(" ".join(track), cfg, n=8, searchers=searchers, track=track, download_only=download_only)
     for candidates, status in batches:
         source, state = status["source"], status["state"]
         states.append(f"{source}:{state}")
@@ -171,6 +174,8 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
                     lic = Path(str(raw) + ".license.json")
                     side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
                     side.update(source_site=c.source, sha256=digest)
+                    if download_only:
+                        side.update(usage_rights="not_evaluated", download_only=True, analysis_only=True)
                     final = to_mp3(path, staging / name)
                     download._sidecar(final, side)
                     download.publish_audio(final, final, out)
@@ -189,7 +194,8 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
     details = ", ".join(states + failures[:4])
     if failures:
         return None, f"no usable download ({details})"
-    return None, f"no licensed match ({candidate_count} found, 0 matching; {details})"
+    result = "no matching recording" if download_only else "no licensed match"
+    return None, f"{result} ({candidate_count} found, 0 matching; {details})"
 
 
 PREVIEW_CLIPS = ("https://itunes.apple.com/search", "https://api.deezer.com/search")
@@ -335,6 +341,11 @@ def needs_recheck(sk, sig, today, force=False):
 
 def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None, official_try=None):
     cfg = cfg or load_config()
+    download_only = getattr(a, "download_only", False)
+    if download_only:
+        from . import catalog_audio
+        cfg = {**cfg, "sources": {**cfg["sources"], "order": list(catalog_audio.SITES)}}
+        searchers = searchers or catalog_audio.searchers()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     state_f = Path(a.state)
@@ -360,11 +371,13 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     qtext = q.read_text(encoding="utf-8") if q.exists() else ""
     qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
     sig = search_signature(cfg)
+    if download_only:
+        sig = hashlib.sha1((sig + ":download-only-v1").encode()).hexdigest()[:8]
     cands = wanted(cfg, qtext, fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
     sources.STATS.clear()
     octx = official.Ctx(cache_file=state_f.with_name("musicbrainz-cache.json"))  # MusicBrainz / page answers are shared by all songs of this run
-    if cfg.get("official", {}).get("enabled", True) and not octx.contact:
+    if not download_only and cfg.get("official", {}).get("enabled", True) and not octx.contact:
         print("songs: MUSICBRAINZ_CONTACT не настроен: MusicBrainz получит User-Agent 'VYBEX/1.0' без контакта (задайте переменную репозитория с вашим адресом или URL проекта)", file=sys.stderr)
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
@@ -389,7 +402,11 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         if w.get("url"):  # a direct link the owner wrote into queue.md (4th field): host allowlist + owner declaration, see fetch_url.py
             from . import fetch_url
             try:
-                name, digest, why = fetch_url.fetch(w["url"], w["artist"], w["title"], out, cfg, rights="owner", known_sha=known_sha(state))
+                if download_only:
+                    name, digest, why = fetch_url.fetch_download_only(w["url"], w["artist"], w["title"], out, cfg,
+                                                                    known_sha=known_sha(state))
+                else:
+                    name, digest, why = fetch_url.fetch(w["url"], w["artist"], w["title"], out, cfg, rights="owner", known_sha=known_sha(state))
             except fetch_url.Duplicate as e:
                 name, why = None, f"дубликат: {e}"
             except fetch_url.DownloadUnavailable as e:
@@ -404,10 +421,11 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             if known_none:
                 name, why = None, read_tag(sk["detail"])[3]
             else:
-                name, why = fetch_one(w, cfg, out, searchers=searchers, dead=dead, known_sha=known_sha(state))
+                options = {"download_only": True} if download_only else {}
+                name, why = fetch_one(w, cfg, out, searchers=searchers, dead=dead, known_sha=known_sha(state), **options)
         song = f'{w["artist"]} - {w["title"]}'
         official_note = ""
-        if not name and not known_none and not w.get("url") and cfg.get("official", {}).get("enabled", True):  # stage 2: the artist's own pages (docs/rights.md)
+        if not download_only and not name and not known_none and not w.get("url") and cfg.get("official", {}).get("enabled", True):  # stage 2: the artist's own pages (docs/rights.md)
             off = (official_try or official.try_song)(w, cfg, out, known_sha(state), ctx=octx)
             links += [(song, p, n) for p, n in off["links"]]
             if off["file"]:
@@ -441,7 +459,8 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     octx.save()
     if links:
         official.save_links(state_f.with_name("song-links.md"), links, today)
-    report = {"songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
+    report = {"download_only": download_only, "usage_rights": "not_evaluated" if download_only else "policy_checked",
+              "songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
               "skip_reasons": skip_kinds, "source_states": src_states, "sources": sources.STATS, "http": http_summary(), "musicbrainz_contact": bool(octx.contact), "signature": sig, "force_retry": bool(a.force_retry)}
     print(json.dumps(report, ensure_ascii=False))
@@ -451,6 +470,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
 def main(argv):
     ap = argparse.ArgumentParser(prog="pipeline songs")
     ap.add_argument("--out", default="out/fetched")
+    ap.add_argument("--download-only", action="store_true", help="queue/chart to public Hitmo/Sefon downloads with technical checks, without evaluating usage rights")
     ap.add_argument("--have-file", help="names already in Drive (audio/ and done/), one per line")
     ap.add_argument("--state", default="out/songs-memory.md", help="memory (md table): used, downloaded and skipped songs")
     ap.add_argument("--discover", action="store_true", help="if the queue/chart gave fewer than --max songs: browse open sources for Russian-titled tracks (indie, not chart)")

@@ -106,7 +106,14 @@ def inspect_audio(path, min_sec=20, max_sec=600):
                 "technical": "verified", "usage_rights": "not_evaluated"}
 
 
-def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sha, check):
+def fetch_download_only(url, artist, title, out, cfg=None, http=requests, known_sha=(), check=None):
+    """Save a technically verified public download without evaluating usage rights."""
+    cfg = cfg or load_config()
+    dc = {**DEFAULTS, **cfg.get("direct_urls", {})}
+    return _fetch_verified(url, artist, title, out, dc, "", "", http, known_sha, check, download_only=True)
+
+
+def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sha, check, *, download_only=False):
     """Transfer and verify bytes after the caller has decided the usage policy."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -145,10 +152,13 @@ def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sh
         path, _ = (check or download.check_audio)(raw, min_sec=dc["min_sec"], max_sec=dc["max_sec"], fixdir=tmp / "fix")
         name = f'{download._slug(artist)} - {download._slug(title)}.mp3'
         final = to_mp3(path, tmp / name)
-        download._sidecar(final, {
+        metadata = {
             "attribution": f'"{title}" by {artist} ({url})' if license else "", "license": license or "owner-declared", "source": url,
             "rights": rights or "license", "sha256": digest, "direct_url": True,
-        })
+        }
+        if download_only:
+            metadata.update(license="", rights="", usage_rights="not_evaluated", download_only=True, analysis_only=True)
+        download._sidecar(final, metadata)
         download.publish_audio(final, final, out)
     return name, digest, f"url {urlparse(url).hostname} sha256:{digest[:16]}"
 

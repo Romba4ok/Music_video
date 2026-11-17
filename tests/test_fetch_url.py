@@ -148,6 +148,15 @@ def test_interrupted_download_restarts_and_preserves_exact_bytes(server, tmp_pat
     assert sha == download.file_sha256(tmp_path / "s.mp3")
 
 
+def test_download_only_checks_bytes_without_fabricating_a_license(server, tmp_path):
+    name, sha, detail = fetch_url.fetch_download_only(server + "/song.mp3", "A", "T", tmp_path / "out", CFG)
+    side = json.loads((tmp_path / "out" / (name + ".license.json")).read_text(encoding="utf-8"))
+    assert side["license"] == "" and side["rights"] == ""
+    assert side["usage_rights"] == "not_evaluated" and side["sha256"] == sha
+    with pytest.raises(Refused, match="не в списке"):
+        fetch_url.fetch_download_only("https://other.example/song.mp3", "A", "T", tmp_path, CFG)
+
+
 def test_failed_direct_link_does_not_stop_the_queue(server, tmp_path, monkeypatch):
     monkeypatch.setenv("VYBEX_OWNER_DECLARES_RIGHTS", "1")
     q = tmp_path / "queue.md"

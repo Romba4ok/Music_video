@@ -11,8 +11,7 @@ import re
 import time
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urlencode, urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import requests
 
@@ -114,31 +113,11 @@ def parse_tracks(html, site, page):
     return parser.results
 
 
-def robots_allows(parser, url):
-    """Apply wildcard robots rules, including query strings and Allow precedence."""
-    entry = next((entry for entry in parser.entries if entry.applies_to(UA)), parser.default_entry)
-    if parser.disallow_all:
-        return False
-    if parser.allow_all or entry is None:
-        return True
-    parsed = urlsplit(url)
-    path = unquote(parsed.path + ("?" + parsed.query if parsed.query else ""))
-    matches = []
-    for rule in entry.rulelines:
-        pattern = unquote(rule.path)
-        anchored = pattern.endswith("$")
-        pattern = pattern[:-1] if anchored else pattern
-        expression = "^" + re.escape(pattern).replace(r"\*", ".*") + ("$" if anchored else "")
-        if re.search(expression, path):
-            matches.append((len(pattern.replace("*", "")), rule.allowance))
-    return max(matches)[1] if matches else True
-
-
 class CatalogClient:
-    """One robots cache per run, bounded retries, and checks on every redirect."""
+    """Public requests with bounded retries, fixed origins, and HTTP error handling."""
 
     def __init__(self, http=requests):
-        self.http, self.robots = http, {}
+        self.http = http
 
     def request(self, url):
         for attempt in range(3):
@@ -157,34 +136,12 @@ class CatalogClient:
                     raise
                 time.sleep(2 ** attempt)
 
-    def allowed(self, url):
-        parsed = urlsplit(url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        if base not in self.robots:
-            try:
-                response = self.request(base + "/robots.txt")
-            except requests.HTTPError as exc:
-                if exc.response.status_code != 404:
-                    raise
-                rules = []
-            else:
-                with response:
-                    if response.is_redirect:
-                        raise Refused("robots.txt redirects: automatic search unavailable")
-                    rules = response.text.splitlines()
-            parser = RobotFileParser()
-            parser.parse(rules)
-            self.robots[base] = parser
-        if not robots_allows(self.robots[base], url):
-            raise Refused(f"robots.txt disallows {parsed.path}")
-
     def search(self, site, query):
         base, path = SITES[site]
         url = base + path + "?" + urlencode({"q": query})
         for _ in range(6):
             if urlsplit(url).scheme != "https" or urlsplit(url).netloc != urlsplit(base).netloc:
                 raise Refused("catalog search redirected outside its HTTPS origin")
-            self.allowed(url)
             with self.request(url) as response:
                 if response.is_redirect:
                     url = urljoin(url, response.headers["Location"])
@@ -193,13 +150,30 @@ class CatalogClient:
         raise Refused("too many catalog redirects")
 
     def get(self, url, **kwargs):
-        """Check download access before each request, including redirected URLs."""
-        self.allowed(url)
+        """The direct downloader checks each redirect host before requesting it."""
         return self.http.get(url, **kwargs)
+
+
+def searchers(client=None):
+    client = client or CatalogClient()
+    return {site: (lambda query, n, cfg, env, site=site: client.search(site, query)[:n]) for site in SITES}
+
+
+def download_candidate(candidate, destination, cfg):
+    """Download the site's advertised full file with a bounded redirect allowlist."""
+    if candidate.source not in SITES:
+        return download.download(candidate, destination, cfg, download_only=True)
+    if not candidate.url:
+        raise Refused("no public full-file URL, protected player URLs are excluded")
+    config = {**cfg, "direct_urls": {**cfg.get("direct_urls", {}),
+                                    "allowed_hosts": DOWNLOAD_HOSTS[candidate.source]}}
+    name, _, _ = fetch_url.fetch_download_only(candidate.url, candidate.artist, candidate.title, destination, config)
+    return Path(destination) / name
 
 
 def run(args, cfg=None, client=None):
     cfg = cfg or load_config()
+    download_only = getattr(args, "download_only", False)
     if args.inspect:
         return [fetch_url.inspect_audio(args.inspect)]
     client = client or CatalogClient()
@@ -240,16 +214,23 @@ def run(args, cfg=None, client=None):
                     fetch_url._check_hop(candidate.url, allowed_hosts)
                     # Source redirects remain subject to the direct-URL host allowlist.
                     download_cfg = {**cfg, "direct_urls": {**cfg.get("direct_urls", {}), "allowed_hosts": allowed_hosts}}
-                    name, digest, detail = fetch_url.fetch(candidate.url, artist, title, out, download_cfg,
-                                                         license=args.license, rights=args.rights,
-                                                         http=client,
-                                                         known_sha=fetch_songs.known_sha(state))
+                    if download_only:
+                        name, digest, detail = fetch_url.fetch_download_only(
+                            candidate.url, artist, title, out, download_cfg, http=client,
+                            known_sha=fetch_songs.known_sha(state),
+                        )
+                    else:
+                        name, digest, detail = fetch_url.fetch(candidate.url, artist, title, out, download_cfg,
+                                                             license=args.license, rights=args.rights,
+                                                             http=client,
+                                                             known_sha=fetch_songs.known_sha(state))
                     state["done"][key] = {"status": "downloaded", "date": time.strftime("%Y-%m-%d", time.gmtime()),
                                           "song": f"{artist} - {title}", "file": name, "detail": detail}
                     state["skipped"].pop(key, None)
                     fetch_songs.save_memory(args.state, state)
                     report.update(downloaded=str(out / name), technical="verified",
-                                  usage_rights="owner_declared" if args.rights == "owner" else "license_verified")
+                                  usage_rights="not_evaluated" if download_only else (
+                                      "owner_declared" if args.rights == "owner" else "license_verified"))
                     saved += 1
                     break
             except (Refused, download.BadAudio, RuntimeError, requests.RequestException, OSError, ValueError) as exc:
@@ -269,12 +250,14 @@ def main(argv=None):
     parser.add_argument("--inspect", help="technical validation of an existing local file")
     parser.add_argument("--sites", nargs="+", choices=SITES, default=list(SITES))
     parser.add_argument("--download", action="store_true", help="save a verified file when usage rights pass the existing policy")
+    parser.add_argument("--download-only", action="store_true", help="save public audio after technical checks, without evaluating usage rights")
     parser.add_argument("--license", default="")
     parser.add_argument("--rights", choices=["", "owner"], default="")
     parser.add_argument("--out", default=str(ROOT / "accounts/main/audio"))
     parser.add_argument("--state", default=str(ROOT / "out/catalog-songs.md"))
     parser.add_argument("--max", type=int, default=3)
     args = parser.parse_args(argv)
+    args.download = args.download or args.download_only
     if sum((bool(args.inspect), bool(args.queue), bool(args.artist or args.title))) != 1:
         parser.error("choose --inspect, --queue, or --artist with --title")
     if not (args.inspect or args.queue) and not (args.artist and args.title):

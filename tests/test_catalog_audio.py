@@ -1,6 +1,5 @@
 from argparse import Namespace
 from pathlib import Path
-from urllib.robotparser import RobotFileParser
 
 import pytest
 import requests
@@ -56,32 +55,17 @@ def test_sefon_metadata_preserves_protected_download_as_unavailable():
     assert tracks[0].url == "" and tracks[0].landing.endswith("/mp3/123-veter/")
 
 
-@pytest.mark.parametrize("rule,url,expected", [
-    ("Disallow: *q=*", "https://ru.hitmoz.org/search?q=Xcho", False),
-    ("Disallow: /get/", "https://ru.hitmoz.org/get/music/song.mp3", False),
-    ("Disallow: /search", "https://sefon.pro/search/?q=Xcho", False),
-    ("Disallow: /get/\nAllow: /get/public/", "https://example.org/get/public/song.mp3", True),
-    ("Disallow: /*.mp3$", "https://example.org/song.mp3", False),
-    ("Disallow: /*.mp3$", "https://example.org/song.mp3/info", True),
-    ("Allow: /", "https://example.org/search?q=Xcho", True),
-])
-def test_robot_wildcards_queries_and_allow_precedence(rule, url, expected):
-    parser = RobotFileParser()
-    parser.parse(("User-agent: *\n" + rule).splitlines())
-    assert catalog_audio.robots_allows(parser, url) == expected
-
-
-def test_restricted_search_is_stopped_before_requesting_results():
+def test_explicit_search_uses_public_html_without_crawler_gate():
     calls = []
 
     class HTTP:
         def get(self, url, **kwargs):
             calls.append(url)
-            return Response(url, "User-agent: *\nDisallow: *q=*\nDisallow: /get/")
+            return Response(url, HITMO)
 
-    with pytest.raises(common.Refused, match="robots.txt"):
-        catalog_audio.CatalogClient(HTTP()).search("hitmo", "Xcho Ветер")
-    assert calls == ["https://ru.hitmoz.org/robots.txt"]
+    tracks = catalog_audio.CatalogClient(HTTP()).search("hitmo", "Xcho Ветер")
+    assert len(tracks) == 2
+    assert len(calls) == 1 and "/search?q=" in calls[0]
 
 
 def test_temporary_search_error_is_retried_and_403_is_final(monkeypatch):
@@ -161,14 +145,17 @@ def test_search_without_download_does_not_treat_unknown_license_as_rejection(tmp
     assert report["usage_rights"] == "not_evaluated" and report["downloaded"] is None
 
 
-def test_download_hop_is_checked_against_robots_before_network():
+def test_403_download_is_rejected_without_retry_or_credentials(monkeypatch):
     calls = []
 
     class HTTP:
         def get(self, url, **kwargs):
-            calls.append(url)
-            return Response(url, "User-agent: *\nDisallow: /get/")
+            calls.append((url, kwargs))
+            return Response(url, code=403)
 
-    with pytest.raises(common.Refused, match="robots.txt"):
-        catalog_audio.CatalogClient(HTTP()).get("https://ru.hitmoz.org/get/music/a.mp3")
-    assert calls == ["https://ru.hitmoz.org/robots.txt"]
+    client = catalog_audio.CatalogClient(HTTP())
+    with pytest.raises(common.Refused, match="HTTP 403"):
+        fetch_url._open("https://ru.hitmoz.org/get/music/a.mp3",
+                        {**fetch_url.DEFAULTS, "allowed_hosts": ["ru.hitmoz.org"]}, client)
+    assert len(calls) == 1
+    assert "Authorization" not in calls[0][1].get("headers", {})

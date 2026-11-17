@@ -91,7 +91,7 @@ jobs:
           echo "Songs in Drive/audio: $HAVE, target $TARGET, downloading up to $NEED" | tee -a "$GITHUB_STEP_SUMMARY"
           # no --discover and no --previews: only songs of queue.md / the Russian chart that a source really allows to download (a video needs real sound)
           FORCE=""; if [ "${{ inputs.force_retry }}" = "true" ]; then FORCE="--force-retry"; fi
-          python -m pipeline songs --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED" $FORCE | tee out/songs.json
+          python -m pipeline songs --download-only --out out/fetched --have-file out/have.txt --state out/songs-memory.md --max "$NEED" $FORCE | tee out/songs.json
       - name: Upload to Drive/audio, then save the memory
         shell: bash
         run: |

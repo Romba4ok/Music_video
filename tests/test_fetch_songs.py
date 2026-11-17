@@ -133,6 +133,28 @@ def test_fetch_one_skips_audio_with_a_known_digest(tmp_path):
     assert list(out.iterdir()) == []
 
 
+def test_download_only_accepts_unknown_usage_rights_and_keeps_technical_checks(tmp_path):
+    cfg = {"licenses_allowed": ["by"], "sources": {"order": ["hitmo"]}}
+    candidate = cand(lic="", source="hitmo")
+    checked = []
+
+    def dl(candidate, destination, cfg):
+        raw = destination / "raw.mp3"
+        raw.write_bytes(b"audio")
+        return raw
+
+    def check(path, **kwargs):
+        checked.append(kwargs)
+        return path, []
+
+    name, _ = fetch_songs.fetch_one({"artist": "Tasso", "title": "Таю", "sec": 0}, cfg, tmp_path,
+                                   {"hitmo": lambda *a: [candidate]}, dl, check, download_only=True)
+    side = json.loads((tmp_path / (name + ".license.json")).read_text(encoding="utf-8"))
+    assert side["license"] == "" and side["usage_rights"] == "not_evaluated"
+    assert side["download_only"] is True and side["analysis_only"] is True
+    assert checked[0]["min_sec"] == 90 and side["sha256"] == fetch_songs.download.file_sha256(tmp_path / name)
+
+
 def test_fetch_one_leaves_a_rate_limited_download_host_and_tries_another(tmp_path):
     cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}
     candidates = [cand(), cand(), cand()]

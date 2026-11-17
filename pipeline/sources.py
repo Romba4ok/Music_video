@@ -172,7 +172,7 @@ def bump(name, **kw):
         s[k] += v
 
 
-def search_batches(q, cfg, env=None, n=5, searchers=None, *, track=None):
+def search_batches(q, cfg, env=None, n=5, searchers=None, *, track=None, download_only=False):
     """Yield each source's allowed candidates and status in configured order."""
     env = os.environ if env is None else env
     searchers = searchers or SEARCHERS
@@ -194,7 +194,7 @@ def search_batches(q, cfg, env=None, n=5, searchers=None, *, track=None):
             bump(name, queries=1)
             yield [], status(name, "unavailable", safe_err(e))
             continue
-        ok = [c for c in res if c.source == "local" or license_ok(c.license or c.license_url, allowed)]
+        ok = [c for c in res if download_only or c.source == "local" or license_ok(c.license or c.license_url, allowed)]
         bump(name, queries=1, candidates=len(res), allowed=len(ok))
         yield ok, status(name, "ok" if ok else "empty", f"{len(ok)}/{len(res)} allowed")
 
