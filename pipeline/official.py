@@ -3,6 +3,7 @@ full audio file that the PAGE ITSELF declares as CC0 / public domain / CC-BY. On
 Anything else is never downloaded: a page without a license, or a file without a declared license, is saved as a LINK for the owner (song-links.md).
 Not touched: streaming/store/social hosts (LINK_ONLY), pages that robots.txt closes, logins, paywalls, DRM. No API key, plain HTTP.
 """
+import json
 import re
 import time
 import urllib.robotparser
@@ -16,7 +17,9 @@ from .sources import _words
 
 UA = {"User-Agent": "vybex-fetch/1.0"}
 MB = "https://musicbrainz.org/ws/2/"
-REL_TYPES = ("official homepage", "download for free", "free streaming", "bandcamp")  # label sites are not reached (no label lookup)
+REL_TYPES = ("official homepage", "download for free", "free streaming", "bandcamp")  # artist level
+FREE_TYPES = ("download for free", "free streaming", "official homepage")  # track / release level: where a free file may be offered
+COMMERCIAL_TYPES = ("purchase for download", "streaming music", "purchase for mail-order", "bandcamp")  # exact commercial release: only a link
 LINK_ONLY = ("bandcamp.com", "soundcloud.com", "youtube.com", "youtu.be", "spotify.com", "apple.com", "deezer.com", "vk.com", "vk.ru", "tiktok.com",
              "instagram.com", "facebook.com", "yandex.ru", "zvuk.com", "t.me")  # their terms forbid automated download: the page is only noted
 AUDIO_EXT = (".mp3", ".wav", ".flac", ".m4a")
@@ -86,30 +89,70 @@ def robots_ok(url, http, timeout, cache):
     return cache[base].can_fetch(UA["User-Agent"], url)
 
 
-def scan_page(url, title, http=requests, timeout=15, robots=None):
-    """-> {url, license, files: [audio urls whose name/text has the title], note}. Never raises on network errors: the note says what happened."""
-    robots = {} if robots is None else robots
-    out = {"url": url, "license": "", "files": [], "note": ""}
+class Ctx:
+    """Per-run state shared by all songs: MusicBrainz answers and scanned pages are fetched ONCE (several songs of one artist cost one request),
+    requests to MusicBrainz are spaced `gap` seconds apart and retried with a back-off on 429/503, and after two failed requests in a row MusicBrainz is
+    switched off for the rest of the run (the songs are then marked `musicbrainz:unavailable` and searched again next time)."""
+
+    def __init__(self, gap=1.1, clock=time.monotonic):
+        self.cache, self.pages, self.robots, self.last, self.fails, self.gap, self.clock = {}, {}, {}, -1e9, 0, gap, clock
+
+    def mb(self, path, params, get_json, sleep):
+        k = (path, json.dumps(params, sort_keys=True))
+        if k in self.cache:
+            return self.cache[k]
+        if self.fails >= 2:
+            raise ConnectionError("MusicBrainz выключен до конца запуска: 2 запроса подряд не прошли")
+        err = None
+        for wait in (0, 3, 8):  # a 429/503 is the rate limit: wait longer each time instead of hammering
+            sleep(max(0.0, self.gap - (self.clock() - self.last)) + wait)
+            self.last = self.clock()
+            try:
+                r = get_json(MB + path, {**params, "fmt": "json"}, headers=UA, retries=0)
+                self.fails, self.cache[k] = 0, r
+                return r
+            except Exception as e:
+                err = e
+                code = getattr(getattr(e, "response", None), "status_code", 0)
+                if code and code not in (429, 503):  # 404 and the like: asking again cannot help
+                    raise
+                self.gap = min(self.gap * 1.5, 3.0)  # the server said "too fast": every later request of this run is spaced wider
+        self.fails += 1
+        raise err
+
+
+def load_page(url, http, timeout, ctx):
+    """-> (parsed page | None, note). One request per URL per run, robots.txt first."""
+    if url in ctx.pages:
+        return ctx.pages[url]
+    p, note = None, ""
     try:
-        if not robots_ok(url, http, timeout, robots):
-            out["note"] = "robots.txt закрывает страницу"
-            return out
-        r = _get(url, http, timeout)
-        if r.status_code >= 400:
-            out["note"] = f"HTTP {r.status_code}"
+        if not robots_ok(url, http, timeout, ctx.robots):
+            note = "robots.txt закрывает страницу"
+        else:
+            r = _get(url, http, timeout)
+            if r.status_code >= 400:
+                note = f"HTTP {r.status_code}"
+            elif "html" not in (r.headers.get("Content-Type") or "").lower():
+                note = "не HTML"
+            else:
+                html = r.raw.read(MAX_HTML, decode_content=True).decode(r.encoding or "utf-8", "replace")
+                p = _Page()
+                p.feed(html)
             r.close()
-            return out
-        if "html" not in (r.headers.get("Content-Type") or "").lower():
-            out["note"] = "не HTML"
-            r.close()
-            return out
-        html = r.raw.read(MAX_HTML, decode_content=True).decode(r.encoding or "utf-8", "replace")
-        r.close()
     except requests.RequestException as e:
-        out["note"] = safe_err(e)
+        note = safe_err(e)
+    ctx.pages[url] = (p, note)
+    return ctx.pages[url]
+
+
+def scan_page(url, title, http=requests, timeout=15, ctx=None):
+    """-> {url, license, files: [audio urls whose name/text has the title], note, _inner}. Never raises on network errors: the note says what happened."""
+    ctx = ctx or Ctx()
+    out = {"url": url, "license": "", "files": [], "note": "", "_inner": []}
+    p, out["note"] = load_page(url, http, timeout, ctx)
+    if p is None:
         return out
-    p = _Page()
-    p.feed(html)
     out["license"] = urljoin(url, p.lic) if p.lic else ""
     tw = set(_words(re.sub(r"[\(\[].*?[\)\]]", " ", title)))
     audio = [(urljoin(url, h), t.strip()) for h, t in p.links if urlparse(h).path.lower().endswith(AUDIO_EXT)]
@@ -121,66 +164,98 @@ def scan_page(url, title, http=requests, timeout=15, robots=None):
     return out
 
 
-def official_pages(artist, title, get_json, sleep=time.sleep):
-    """MusicBrainz -> [(relation type, url)] of the artist (and the recording). Empty list = MusicBrainz does not know the artist."""
-    want = _words(artist)
-    pages = []
-    data = get_json(MB + "artist/", {"query": f'artist:"{artist}"', "fmt": "json", "limit": 5}, headers=UA)
-    ids = [a["id"] for a in data.get("artists", []) if a.get("score", 0) >= 90 and want and _words(a.get("name")) == want]
-    for mbid in ids[:1]:
-        sleep(1.1)  # MusicBrainz asks for at most one request per second
-        rels = get_json(f"{MB}artist/{mbid}", {"inc": "url-rels", "fmt": "json"}, headers=UA).get("relations", [])
-        pages += [(r["type"], r["url"]["resource"]) for r in rels if r.get("type") in REL_TYPES and r.get("url")]
-    return ids, pages
+def _rels(rels, types):
+    return [(r["type"], r["url"]["resource"]) for r in rels or [] if r.get("type") in types and r.get("url")]
 
 
-def try_song(w, cfg, out, known_sha=(), http=requests, get_json=None, fetch=None, sleep=time.sleep):
+def identify(w, ctx, get_json, sleep):
+    """MusicBrainz -> exact recording / release / label / artist pages of the wanted song.
+    -> {"known": bool, "pages": [(rel, url)] where a free file may be offered, "commercial": [(note, url)] exact commercial links, "facts": str}"""
+    ask = lambda path, params: ctx.mb(path, params, get_json, sleep)
+    artist = w["artist"]
+    want, tw = _words(artist), set(_words(w["title"]))
+    res = {"known": False, "pages": [], "commercial": [], "facts": ""}
+    # 1) the exact recording -> its release and label (a Cyrillic title may be missing in MusicBrainz: then only the artist is known)
+    rec = None
+    for r in ask("recording/", {"query": f'recording:"{w["title"]}" AND artist:"{artist}"', "limit": 5}).get("recordings", []):
+        names = _words(" ".join(c.get("name", "") for c in r.get("artist-credit", []) if isinstance(c, dict)))
+        if r.get("score", 0) >= 90 and tw <= set(_words(r.get("title"))) and any(x in names for x in want if len(x) > 2):
+            rec = r
+            break
+    if rec:
+        res["known"] = True
+        rels = ask(f'recording/{rec["id"]}', {"inc": "url-rels"}).get("relations", [])
+        res["pages"] += _rels(rels, FREE_TYPES)
+        res["commercial"] += [(f"{t}: запись", u) for t, u in _rels(rels, COMMERCIAL_TYPES)]
+        rel = next((x for x in rec.get("releases", []) if x.get("status") == "Official"), (rec.get("releases") or [None])[0])
+        if rel:
+            rd = ask(f'release/{rel["id"]}', {"inc": "labels+url-rels"})
+            labels = [li["label"] for li in rd.get("label-info", []) if li.get("label")]
+            res["facts"] = f'релиз «{rd.get("title", "")}» {rd.get("date", "")}, лейбл: {", ".join(l.get("name", "") for l in labels) or "не указан"}'
+            res["pages"] += _rels(rd.get("relations"), FREE_TYPES)
+            res["commercial"] += [(f"{t}: релиз", u) for t, u in _rels(rd.get("relations"), COMMERCIAL_TYPES)]
+            for lab in labels[:1]:
+                res["pages"] += _rels(ask(f'label/{lab["id"]}', {"inc": "url-rels"}).get("relations"), ("official homepage", "download for free"))
+            if not res["commercial"]:
+                res["commercial"].append((f"релиз в MusicBrainz ({res['facts']})", f'https://musicbrainz.org/release/{rel["id"]}'))
+    # 2) the artist's own pages
+    ids = [a["id"] for a in ask("artist/", {"query": f'artist:"{artist}"', "limit": 5}).get("artists", []) if a.get("score", 0) >= 90 and _words(a.get("name")) == want]
+    if ids:
+        res["known"] = True
+        res["pages"] += _rels(ask(f"artist/{ids[0]}", {"inc": "url-rels"}).get("relations", []), REL_TYPES)
+    return res
+
+
+def try_song(w, cfg, out, known_sha=(), http=requests, get_json=None, fetch=None, sleep=time.sleep, ctx=None):
     """-> dict {file, detail, links: [(page, note)], reason}. file = downloaded name or None."""
     from . import fetch_url
     from .common import get_json as _gj
     oc = {"max_pages": 6, "timeout": 15, **cfg.get("official", {})}
-    get_json, fetch = get_json or _gj, fetch or fetch_url.fetch
+    get_json, fetch, ctx = get_json or _gj, fetch or fetch_url.fetch, ctx or Ctx()
     res = {"file": None, "detail": "", "links": [], "reason": ""}
     try:
-        ids, pages = official_pages(w["artist"], w["title"], get_json, sleep)
+        info = identify(w, ctx, get_json, sleep)
     except Exception as e:
-        res["reason"] = f"MusicBrainz не ответил ({safe_err(e)})"
+        res["reason"] = f"musicbrainz:unavailable ({safe_err(e)})"
         return res
-    if not pages:
-        res["reason"] = "MusicBrainz: артист не найден" if not ids else "MusicBrainz: у артиста нет официальных страниц"
+    if not info["known"]:
+        res["reason"] = "MusicBrainz: ни записи, ни артиста"
         return res
-    robots, seen, notes = {}, set(), []
-    for rel, page in pages[: oc["max_pages"]]:
-        host = urlparse(page).hostname
-        if _host_in(host, LINK_ONLY):
-            res["links"].append((page, f"{rel}: страница артиста (скачивание автоматом запрещено условиями сайта)"))
+    res["links"] += [(u, f"коммерческий релиз, {n}") for n, u in info["commercial"]]
+    seen, notes, pages = set(), [], []
+    for rel, u in info["pages"]:
+        if u not in pages:
+            pages.append(u)
+    for page in pages[: oc["max_pages"]]:
+        if _host_in(urlparse(page).hostname, LINK_ONLY):
+            res["links"].append((page, "официальная страница (скачивание автоматом запрещено условиями сайта)"))
             continue
-        sleep(1)
         todo = [page]
         while todo and len(seen) < oc["max_pages"] * 2:
             u = todo.pop(0)
             if u in seen:
                 continue
             seen.add(u)
-            info = scan_page(u, w["title"], http, oc["timeout"], robots)
-            notes.append(f'{urlparse(u).hostname}: {info["note"] or "ok"}')
-            if info["files"]:
-                lic = info["license"]
+            sc = scan_page(u, w["title"], http, oc["timeout"], ctx)
+            notes.append(f'{urlparse(u).hostname}: {sc["note"] or "ok"}')
+            if sc["files"]:
+                lic = sc["license"]
                 if lic and license_ok(lic, cfg["licenses_allowed"]):
-                    cfg2 = {**cfg, "direct_urls": {**cfg.get("direct_urls", {}), "allowed_hosts": [urlparse(info["files"][0]).hostname]}}
+                    cfg2 = {**cfg, "direct_urls": {**cfg.get("direct_urls", {}), "allowed_hosts": [urlparse(sc["files"][0]).hostname]}}
                     try:
-                        name, _, why = fetch(info["files"][0], w["artist"], w["title"], out, cfg2, license=lic, known_sha=known_sha)
+                        name, _, why = fetch(sc["files"][0], w["artist"], w["title"], out, cfg2, license=lic, known_sha=known_sha)
                         res.update(file=name, detail=f"official {u}: {why}")
                         return res
                     except (Refused, RuntimeError, OSError) as e:
                         notes.append(f"файл не принят: {str(e)[:100]}")
                 else:
-                    res["links"].append((info["files"][0], f"файл найден на {urlparse(u).hostname}, но страница не объявляет разрешённую лицензию ({license_key(lic) or 'нет'})"))
+                    res["links"].append((sc["files"][0], f"файл найден на {urlparse(u).hostname}, но страница не объявляет разрешённую лицензию ({license_key(lic) or 'нет'})"))
             elif u == page:
-                todo += info.get("_inner", [])[:3]  # links of the artist's page that carry the song title: the song page, one level deep
-            elif not info["note"]:
-                res["links"].append((u, "страница песни найдена, файла для скачивания на ней нет"))
-    res["reason"] = "официальные страницы проверены: " + "; ".join(notes[:6]) if notes else "официальные страницы только на сайтах, где автоскачивание запрещено"
+                todo += sc["_inner"][:3]  # links of that page that carry the song title: the track page, one level deep
+            elif not sc["note"]:
+                res["links"].append((u, "страница трека найдена, файла для скачивания на ней нет"))
+    res["links"] = list(dict.fromkeys(res["links"]))
+    res["reason"] = (info["facts"] + "; " if info["facts"] else "") + ("проверено: " + "; ".join(notes[:6]) if notes else "официальных страниц для автоскачивания нет")
     return res
 
 

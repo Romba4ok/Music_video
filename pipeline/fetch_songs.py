@@ -326,6 +326,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     sig = search_signature(cfg)
     cands = wanted(cfg, qtext, fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
+    octx = official.Ctx()  # MusicBrainz / page answers are shared by all songs of this run
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
     for w in cands:
@@ -359,7 +360,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         song = f'{w["artist"]} - {w["title"]}'
         official_note = ""
         if not name and not known_none and not w.get("url") and cfg.get("official", {}).get("enabled", True):  # stage 2: the artist's own pages (docs/rights.md)
-            off = (official_try or official.try_song)(w, cfg, out, known_sha(state))
+            off = (official_try or official.try_song)(w, cfg, out, known_sha(state), ctx=octx)
             links += [(song, p, n) for p, n in off["links"]]
             if off["file"]:
                 name, why = off["file"], off["detail"]
