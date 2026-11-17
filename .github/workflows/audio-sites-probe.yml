@@ -7,6 +7,8 @@ permissions:
   contents: read
 jobs:
   probe:
+    outputs:
+      need_audio: ${{ steps.inventory.outputs.need_audio }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -72,13 +74,38 @@ jobs:
             out/aac-probe.json
             out/aac-ffprobe.json
           retention-days: 3
+      - name: Check whether Drive needs any new audio
+        id: inventory
+        env:
+          RCLONE_CONFIG_GD_TYPE: drive
+          RCLONE_CONFIG_GD_SCOPE: drive
+          RCLONE_CONFIG_GD_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GD_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          if not os.environ['RT']:
+              raise SystemExit('GDRIVE_REFRESH_TOKEN is missing')
+          os.environ['RCLONE_CONFIG_GD_TOKEN'] = json.dumps({'access_token': '', 'token_type': 'Bearer', 'refresh_token': os.environ.pop('RT'), 'expiry': '2000-01-01T00:00:00Z'})
+          root = json.loads(subprocess.check_output(['rclone', 'lsjson', 'gd:', '--dirs-only'], text=True))
+          files = json.loads(subprocess.check_output(['rclone', 'lsjson', 'gd:audio', '--files-only'], text=True)) if any(p['Name'] == 'audio' for p in root) else []
+          count = sum(Path(p['Name']).suffix.lower() in ('.mp3', '.wav', '.m4a', '.ogg', '.flac') for p in files)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              print('need_audio=' + ('true' if count < 3 else 'false'), file=stream)
+          print(f'Drive/audio contains {count} audio files; writing required: {count < 3}')
+          PY
   drive:
     needs: probe
     concurrency:
-      group: vybex-drive
+      group: ${{ needs.probe.outputs.need_audio == 'true' && 'vybex-drive' || github.run_id }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      READ_ONLY: ${{ needs.probe.outputs.need_audio == 'false' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -143,6 +170,10 @@ jobs:
           done
           HAVE=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac)$' out/current-audio.txt || true)
           NEED=$((3 - HAVE)); [ "$NEED" -lt 0 ] && NEED=0
+          if [ "$READ_ONLY" = 1 ] && [ "$NEED" -gt 0 ]; then
+            echo 'Drive inventory changed during verification; rerun after the current writer finishes.'
+            exit 1
+          fi
           echo "Drive/audio has $HAVE audio files; download up to $NEED to reach three."
           python -m pipeline songs --download-only --force-retry --queue out/probe-queue.md \
             --out accounts/main/audio --have-file out/have.txt --state out/songs-memory.md \
@@ -190,20 +221,30 @@ jobs:
         shell: bash
         run: |
           if compgen -G 'accounts/main/audio/*.mp3' > /dev/null; then
+            if [ "$READ_ONLY" = 1 ]; then echo 'Read-only verification cannot upload files'; exit 1; fi
             rclone copy accounts/main/audio gd:audio --immutable
             rclone check accounts/main/audio gd:audio --one-way
+            rclone mkdir gd:state
+            rclone copyto out/songs-memory.md gd:state/songs.md
             echo 'New audio uploaded and one-way checksum verification passed.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Existing Drive/audio files preserved; no duplicate downloads or uploads.' >> "$GITHUB_STEP_SUMMARY"
           fi
-          rclone mkdir gd:state
-          rclone copyto out/songs-memory.md gd:state/songs.md
           rclone lsjson gd:audio --files-only --hash > out/drive-audio.json
           cat out/verified.json >> "$GITHUB_STEP_SUMMARY"
       - name: Read Drive files back and verify formats
         shell: bash
         run: |
-          rclone copy gd:audio out/drive-verification --include '*.mp3' --include '*.mp3.license.json'
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows = json.loads(Path('out/drive-audio.json').read_text())
+          audio = sorted((r for r in rows if r['Name'].lower().endswith('.mp3')), key=lambda r: r['ModTime'], reverse=True)[:3]
+          names = {r['Name'] for r in rows}
+          wanted = [name for r in audio for name in (r['Name'], r['Name'] + '.license.json') if name in names]
+          Path('out/readback-files.txt').write_text('\n'.join(wanted) + '\n')
+          PY
+          rclone copy gd:audio out/drive-verification --files-from out/readback-files.txt
           rclone check out/drive-verification gd:audio --one-way
           python - <<'PY'
           import json, subprocess
