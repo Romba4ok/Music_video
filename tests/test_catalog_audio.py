@@ -1,3 +1,4 @@
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -85,6 +86,31 @@ def test_temporary_search_error_is_retried_and_403_is_final(monkeypatch):
     with pytest.raises(requests.HTTPError):
         client.request("https://ru.hitmoz.org/")
     assert len(calls) == 3
+
+
+def test_403_logs_response_body_and_headers_without_cookie_or_url_secrets(capsys):
+    class HTTP:
+        def get(self, url, **kwargs):
+            return Response(url, "<h1>Access denied for your country</h1>", code=403, headers={
+                "Server": "nginx", "Content-Type": "text/html", "X-Request-ID": "request-123",
+                "Set-Cookie": "session=private", "Authorization": "Bearer private", "X-Api-Key": "private",
+            })
+
+    with pytest.raises(requests.HTTPError):
+        catalog_audio.CatalogClient(HTTP()).request("https://sefon.pro/search/?q=song&token=private")
+    logged = json.loads(capsys.readouterr().err)
+    assert logged["http_diagnostic"] == 403
+    assert logged["body"] == "<h1>Access denied for your country</h1>"
+    assert logged["headers"]["Server"] == "nginx" and logged["headers"]["X-Request-ID"] == "request-123"
+    assert logged["headers"]["Set-Cookie"] == logged["headers"]["Authorization"] == "[redacted]"
+    assert logged["headers"]["X-Api-Key"] == "[redacted]"
+    assert logged["url"] == "https://sefon.pro/search/" and logged["body_truncated"] is False
+
+
+def test_403_diagnostic_marks_body_limit(capsys):
+    catalog_audio.log_forbidden(Response("https://sefon.pro/", "x" * 70000, code=403), "https://sefon.pro/")
+    logged = json.loads(capsys.readouterr().err)
+    assert len(logged["body"]) == 65536 and logged["body_truncated"] is True
 
 
 def test_rights_and_technical_validation_are_independent(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ python -m pipeline.catalog_audio --inspect path/to/audio.mp3
 import argparse
 import json
 import re
+import sys
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -113,6 +114,23 @@ def parse_tracks(html, site, page):
     return parser.results
 
 
+def log_forbidden(response, url):
+    """Record the site's explanation without cookies or authorization values."""
+    parsed = urlsplit(url)
+    headers = {
+        name: "[redacted]" if re.search(r"cookie|authorization|token|secret|api[-_]key", name, re.I) else value
+        for name, value in response.headers.items()
+    }
+    body = response.text
+    print(json.dumps({
+        "http_diagnostic": 403,
+        "url": f"{parsed.scheme}://{parsed.hostname}{parsed.path}",
+        "headers": headers,
+        "body": body[:65536],
+        "body_truncated": len(body) > 65536,
+    }, ensure_ascii=False), file=sys.stderr, flush=True)
+
+
 class CatalogClient:
     """Public requests with bounded retries, fixed origins, and HTTP error handling."""
 
@@ -124,6 +142,8 @@ class CatalogClient:
             try:
                 response = self.http.get(url, headers={"User-Agent": UA}, timeout=(6, 15), allow_redirects=False)
                 HTTP_LOG.append((urlsplit(url).hostname, response.status_code))
+                if response.status_code == 403:
+                    log_forbidden(response, url)
                 response.raise_for_status()
                 return response
             except requests.RequestException as exc:
