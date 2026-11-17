@@ -89,17 +89,15 @@ jobs:
             if head -n1 queue.txt | grep -qF 'vybex-selftest'; then rclone deletefile gd:queue.txt && echo "deleted gd:queue.txt (temporary test queue)"; else echo "gd:queue.txt has no selftest marker: NOT touched"; fi
           fi
           if rclone lsf gd:state | grep -qx 'selftest.json'; then
-            rclone copyto gd:state/selftest.json selftest.json
-            DAY=$(python -c "import json;print(json.load(open('selftest.json'))['date'])")
-            rclone deletefile gd:state/selftest.json
+            rclone deletefile gd:state/selftest.json && echo "deleted gd:state/selftest.json"
           fi
           for DAY in $(rclone lsf gd:ready | tr -d /); do
-            rclone lsf "gd:ready/$DAY" | grep -F "VYBEX Selftest" | while read -r f; do rclone deletefile "gd:ready/$DAY/$f" && echo "deleted gd:ready/$DAY/$f"; done
+            { rclone lsf "gd:ready/$DAY" | grep -F "VYBEX Selftest" || true; } | while read -r f; do rclone deletefile "gd:ready/$DAY/$f" && echo "deleted gd:ready/$DAY/$f"; done
             if rclone lsf "gd:ready/$DAY" | grep -qx 'report.json'; then
               rclone copyto "gd:ready/$DAY/report.json" r.json
               if grep -qF "VYBEX Selftest" r.json; then rclone deletefile "gd:ready/$DAY/report.json" && echo "deleted gd:ready/$DAY/report.json (report of the test run)"; fi
             fi
-            if [ -z "$(rclone lsf "gd:ready/$DAY")" ]; then rclone rmdir "gd:ready/$DAY" && echo "removed empty gd:ready/$DAY"; else echo "gd:ready/$DAY still holds: $(rclone lsf "gd:ready/$DAY" | xargs) (not test files, NOT touched)"; fi
+            if [ -z "$(rclone lsf "gd:ready/$DAY" || true)" ]; then rclone rmdir "gd:ready/$DAY" && echo "removed empty gd:ready/$DAY"; else echo "gd:ready/$DAY still holds: $(rclone lsf "gd:ready/$DAY" | xargs) (not test files, NOT touched)"; fi
           done
           if rclone lsf gd:state | grep -qx 'songs.md'; then
             rclone copyto gd:state/songs.md out-songs.md
