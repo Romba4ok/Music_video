@@ -87,7 +87,7 @@ def test_fetch_one_skips_when_nothing_matches_and_marks_dead_source(tmp_path):
 def run_args(tmp_path, queue="", **kw):
     q = tmp_path / "queue.md"
     q.write_text(queue, encoding="utf-8")
-    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, previews=False, **kw)
+    return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, previews=False, force_retry=False, **kw)
 
 
 def test_run_journal_dedup_and_retry_window(tmp_path, monkeypatch):

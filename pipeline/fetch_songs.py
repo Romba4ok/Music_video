@@ -3,6 +3,7 @@ The workflow then uploads the folder to Drive/audio with rclone. Nothing is bypa
 python -m pipeline songs --out out/fetched [--have-file out/have.txt] [--state out/songs-memory.md] [--max 5] [--tries 40]
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -65,6 +66,11 @@ def record_used(st, names, today):
             st["skipped"].pop(key(a, t), None)
 
 
+def known_sha(st):
+    """sha256 prefixes of files already saved (written into the memory `detail` by fetch_url)."""
+    return {m.group(1) for r in st["done"].values() for m in [re.search(r"sha256:([0-9a-f]{16})", r["detail"])] if m}
+
+
 def taste_artists(st):
     """Artists of songs already made (memory `used`): the owner's taste, letters only, lowercase."""
     return {re.sub(r"[\W_]+", "", parse_name(r["song"])[0].lower()) for r in st["done"].values() if r["status"] == "used" and parse_name(r["song"])[0]}
@@ -80,7 +86,8 @@ def fits(artist, title, taste):
 def wanted(cfg, queue_text="", fetch_chart=None, taste=frozenset()):
     """[{artist, title, sec}] queue first (curated by brief.md), then the chart songs that fit (Russian / owner's artists; owner's artists first).
     Chart failure = queue only."""
-    out = [{"artist": e["artist"], "title": e["title"], "sec": 0} for e in parse_queue(queue_text)]
+    out = [{"artist": e["artist"], "title": e["title"], "sec": 0, "url": e["audio_file"] if e["audio_file"].lower().startswith(("http://", "https://")) else ""}
+           for e in parse_queue(queue_text)]
     try:
         rows = (fetch_chart or _chart)(cfg)
     except Exception as e:
@@ -124,12 +131,13 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
     `dead` (shared set): sources that failed with a network/API error are not asked again in this run (each failure costs ~60 s of retries)."""
     dl, check = dl or download.download, check or download.check_audio
     dead = set() if dead is None else dead
+    pre_dead = sorted(dead)  # switched off earlier in this run: they did not answer, so a song skipped now must not look like a definitive "no"
     cfg = {**cfg, "sources": {**cfg["sources"], "order": [o for o in cfg["sources"]["order"] if o != "local" and o not in dead]}}
     cands, sts = sources.search(f'{w["artist"]} {w["title"]}', cfg, n=8, searchers=searchers)
     dead.update(x["source"] for x in sts if x["state"] == "unavailable")
     good = [c for c in cands if sources.matches(w["artist"], w["title"], c, w["sec"])]
     if not good:
-        return None, f"no licensed match ({len(cands)} found, 0 matching; {', '.join(s['source'] + ':' + s['state'] for s in sts)})"
+        return None, f"no licensed match ({len(cands)} found, 0 matching; {', '.join([s['source'] + ':' + s['state'] for s in sts] + [d + ':unavailable' for d in pre_dead])})"
     Path(out).mkdir(parents=True, exist_ok=True)
     tmp = Path(out) / "_tmp"
     for c in good:
@@ -249,6 +257,46 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
     return got
 
 
+ALGO_VERSION = "2026-11-17.1"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
+
+
+def search_signature(cfg, env=None):
+    """Short hash of everything that decides what a search can find: sources and their order, allowed licenses and hosts, which credentials exist, the
+    algorithm version. A skipped song keeps the signature it was skipped under; another signature = 'checked with something else' = searched again now."""
+    env = os.environ if env is None else env
+    cred = sorted(n for n in ("JAMENDO_CLIENT_ID", "SOUNDCLOUD_CLIENT_ID", "YOUTUBE_API_KEY") if env.get(n))
+    blob = json.dumps([ALGO_VERSION, cfg.get("sources", {}).get("order"), sorted(cfg.get("licenses_allowed", [])),
+                       sorted((cfg.get("direct_urls") or {}).get("allowed_hosts", [])), cred], ensure_ascii=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:8]
+
+
+TAG = re.compile(r"^\[sig:(\w+) n:(\d+) first:(\d{4}-\d{2}-\d{2})\]\s*")
+
+
+def read_tag(detail):
+    """'[sig:ab12 n:3 first:2026-11-16] reason' -> (sig, attempts, first date, reason). Old rows without a tag -> ('', 0, '', detail)."""
+    m = TAG.match(detail or "")
+    return (m.group(1), int(m.group(2)), m.group(3), detail[m.end():]) if m else ("", 0, "", detail or "")
+
+
+def tag(sig, prev, today, why):
+    """Same song, same row: the attempt counter grows and the first date stays, so nothing of the history is lost and no duplicate row appears."""
+    _, n, first, _ = read_tag(prev["detail"]) if prev else ("", 0, "", "")
+    return f"[sig:{sig} n:{n + 1} first:{first or (prev or {}).get('date') or today}] {why}"
+
+
+def needs_recheck(sk, sig, today, force=False):
+    """A skipped song is searched again when: --force-retry; the search signature changed (sources, permissions, credentials, algorithm); a source did not
+    answer (that is not a real 'no'); or RETRY_DAYS have passed."""
+    if force:
+        return True
+    s, _, _, why = read_tag(sk["detail"])
+    if s != sig or ":unavailable" in why:
+        return True
+    age = time.mktime(time.strptime(today, "%Y-%m-%d")) - time.mktime(time.strptime(sk["date"], "%Y-%m-%d"))
+    return age >= RETRY_DAYS * 86400
+
+
 def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None):
     cfg = cfg or load_config()
     out = Path(a.out)
@@ -275,28 +323,51 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     q = Path(a.queue)
     qtext = q.read_text(encoding="utf-8") if q.exists() else ""
     qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
-    got, tries, dead = [], 0, set()
-    for w in wanted(cfg, qtext, fetch_chart, taste):
+    sig = search_signature(cfg)
+    cands = wanted(cfg, qtext, fetch_chart, taste)
+    got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
+    pending = []  # (wanted song, key, previous skipped row or None)
+    for w in cands:
         k = key(w["artist"], w["title"])
-        if len(got) >= a.max or tries >= a.tries:
-            break
         if k in have or k in state["done"]:
             continue
         sk = state["skipped"].get(k)
-        known_none = bool(sk and time.mktime(time.strptime(today, "%Y-%m-%d")) - time.mktime(time.strptime(sk["date"], "%Y-%m-%d")) < RETRY_DAYS * 86400)
+        if sk is None or needs_recheck(sk, sig, today, a.force_retry) or (a.previews and k in qkeys):
+            pending.append((w, k, sk))
+        else:
+            blocked += 1  # skipped under the same search signature less than RETRY_DAYS ago, no source failed: nothing new could be found
+    done_n = 0
+    for w, k, sk in pending:
+        if len(got) >= a.max or tries >= a.tries:
+            break
+        done_n += 1
         want_preview = a.previews and k in qkeys
-        if known_none and not want_preview:
-            continue
+        known_none = bool(sk and not needs_recheck(sk, sig, today, a.force_retry))
         tries += 1
-        name, why = (None, sk["detail"]) if known_none else fetch_one(w, cfg, out, searchers, dead=dead)  # no licensed full file is already known: go straight to the preview
+        retried += 1 if sk else 0
+        if w.get("url"):  # a direct link the owner wrote into queue.md (4th field): host allowlist + owner declaration, see fetch_url.py
+            from . import fetch_url
+            try:
+                name, digest, why = fetch_url.fetch(w["url"], w["artist"], w["title"], out, cfg, rights="owner", known_sha=known_sha(state))
+            except fetch_url.Duplicate as e:
+                name, why = None, f"дубликат: {e}"
+            except (fetch_url.Refused, RuntimeError, OSError) as e:
+                name, why = None, f"ссылка: {str(e)[:150]}"
+        else:
+            name, why = (None, read_tag(sk["detail"])[3]) if known_none else fetch_one(w, cfg, out, searchers, dead=dead)  # no licensed full file is already known: go straight to the preview
         if not name and want_preview:
             name, why = fetch_preview(w, out, None if preview_find is None else preview_find(w))
+        song = f'{w["artist"]} - {w["title"]}'
         if name:
-            state["done"][k] = {"status": "downloaded", "date": today, "song": f'{w["artist"]} - {w["title"]}', "file": name, "detail": why}
+            state["done"][k] = {"status": "downloaded", "date": today, "song": song, "file": name, "detail": why}
             state["skipped"].pop(k, None)
             got.append(name)
         else:
-            state["skipped"][k] = {"status": "skipped", "date": today, "song": f'{w["artist"]} - {w["title"]}', "file": "", "detail": why}
+            state["skipped"][k] = {"status": "skipped", "date": today, "song": song, "file": "", "detail": tag(sig, sk, today, why)}
+            kind = why.split(" (")[0].split(":")[0][:40]
+            skip_kinds[kind] = skip_kinds.get(kind, 0) + 1
+            for s, st in re.findall(r"([\w-]+):(empty|needs_auth|unavailable|refused|ok)\b", why):
+                src_states[f"{s}:{st}"] = src_states.get(f"{s}:{st}", 0) + 1
         sleep(1)  # be polite to the free APIs
     if a.discover and len(got) < a.max:
         seen = set(have) | set(state["done"]) | set(state["skipped"])
@@ -306,7 +377,10 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             got.append(name)
     shutil.rmtree(out / "_tmp", ignore_errors=True)
     save_memory(state_f, state)
-    print(json.dumps({"downloaded": got, "tried": tries, "skipped_total": len(state["skipped"])}, ensure_ascii=False))
+    report = {"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
+              "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
+              "skip_reasons": skip_kinds, "source_states": src_states, "signature": sig, "force_retry": bool(a.force_retry)}
+    print(json.dumps(report, ensure_ascii=False))
     return got
 
 
@@ -316,6 +390,7 @@ def main(argv):
     ap.add_argument("--have-file", help="names already in Drive (audio/ and done/), one per line")
     ap.add_argument("--state", default="out/songs-memory.md", help="memory (md table): used, downloaded and skipped songs")
     ap.add_argument("--discover", action="store_true", help="if the queue/chart gave fewer than --max songs: browse open sources for Russian-titled tracks (indie, not chart)")
+    ap.add_argument("--force-retry", action="store_true", help="search ALL skipped songs again now (ignores the 14-day wait and the search signature); history rows are updated, never duplicated")
     ap.add_argument("--previews", action="store_true", help="for queue.md songs with no licensed full file: take the official 30 s preview (Apple/Deezer) for lyric timing only; the video must then be made in mode tiktok")
     ap.add_argument("--check-list", help="audio folder: exit 1 if it holds a song that is not in queue.md (the workflow stops), search nothing")
     ap.add_argument("--prune", help="write to this file the names of earlier downloads that do not fit (not Russian / not your artists), forget them in the memory, search nothing")

@@ -11,6 +11,7 @@ USAGE = """stages:
   trends                          TikTok trends from official/permitted data
   ideas [--have-file f] [-o out/ideas.md]   song ideas from the YouTube music chart (needs YOUTUBE_API_KEY) -> Drive/ideas.md
   songs [--out out/fetched] [--max 5]   daily: queue + KZ chart -> licensed full tracks (cc0/pd/by) -> mp3 + journal (workflow uploads to Drive)
+  url <URL> --artist A --title T [--license by | --rights owner]   one direct mp3/wav/flac/m4a link from an allowed host (config direct_urls) -> checked mp3
   insights [--acc main]          views by card recipe (accounts/<acc>/cards.jsonl + views.csv)
 """
 
@@ -61,6 +62,9 @@ def main(argv):
     if cmd == "ideas":
         from . import song_ideas
         return song_ideas.main(rest)
+    if cmd == "url":
+        from . import fetch_url
+        return fetch_url.main(rest)
     if cmd == "songs":
         from . import fetch_songs
         return fetch_songs.main(rest)

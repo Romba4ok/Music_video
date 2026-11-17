@@ -139,6 +139,9 @@ def remember_cards(acc, date, song, spec):
 def fetch_audio(entry, cfg, mode):
     """Resolve an audio file: queue file -> local match -> allowed sources. Returns (path|None, statuses)."""
     ad = ROOT / cfg["audio_dir"]
+    if entry["audio_file"].lower().startswith(("http://", "https://")):  # direct link in queue.md: the prefetch step saved the file under the song's name
+        ws = [w for w in re.split(r"\W+", f'{entry["artist"]} {entry["title"]}'.lower()) if w]
+        entry = dict(entry, audio_file=next((f.name for f in sorted(ad.glob("*")) if f.suffix.lower() in AUDIO_EXT and all(w in f.stem.lower() for w in ws)), ""))
     if entry["audio_file"] and (ad / entry["audio_file"]).exists():
         side = ad / (entry["audio_file"] + ".license.json")
         if mode == "auto" and side.exists() and json.loads(side.read_text(encoding="utf-8")).get("analysis_only"):
