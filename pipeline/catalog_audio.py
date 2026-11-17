@@ -25,10 +25,12 @@ from .common import HTTP_LOG, ROOT, Refused, load_config, safe_err
 SITES = {
     "hitmo": ("https://ru.hitmoz.org", "/search"),
     "sefon": ("https://sefon.pro", "/search/"),
+    "mp3pm": ("https://mp3.pm", "/"),
 }
 DOWNLOAD_HOSTS = {
     "hitmo": ("ru.hitmoz.org", "deliciousoranges.com"),
     "sefon": ("sefon.pro",),
+    "mp3pm": ("mp3.pm",),
 }
 UA = "vybex-fetch/1.0"
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -60,6 +62,13 @@ class TrackHTML(HTMLParser):
             self.finish()
             self.card = {"artist": [], "title": [], "text": [], "url": "", "landing": ""}
             self.depth = len(self.stack)
+        elif self.site == "mp3pm" and "cplayer-sound-item" in classes:
+            self.finish()
+            target = urljoin(self.page, attrs.get("data-download-url") or "")
+            self.card = {"artist": [], "title": [], "text": [], "url": target if (
+                urlsplit(target).scheme == "https" and urlsplit(target).path.startswith("/download/")
+            ) else "", "landing": ""}
+            self.depth = len(self.stack)
         if self.card and tag == "a":
             href = attrs.get("href") or ""
             target = urljoin(self.page, href)
@@ -86,8 +95,11 @@ class TrackHTML(HTMLParser):
             return
         text = text.strip()
         self.card["text"].append(text)
-        if self.site == "sefon":
-            for field, cls in (("artist", "artist_name"), ("title", "song_name")):
+        if self.site in ("sefon", "mp3pm"):
+            fields = (("artist", "artist_name"), ("title", "song_name")) if self.site == "sefon" else (
+                ("artist", "cplayer-data-sound-author"), ("title", "cplayer-data-sound-title"),
+            )
+            for field, cls in fields:
                 if any(cls in classes for _, classes in self.stack[self.depth:]):
                     self.card[field].append(text)
 
@@ -183,9 +195,13 @@ class CatalogClient:
 
     def search(self, site, query):
         base, path = SITES[site]
-        url = base + path + "?" + urlencode({"q": query})
+        params = {"a": "redirect", "q": query} if site == "mp3pm" else {"q": query}
+        url = base + path + "?" + urlencode(params)
         for _ in range(6):
-            if urlsplit(url).scheme != "https" or urlsplit(url).netloc != urlsplit(base).netloc:
+            parsed = urlsplit(url)
+            origin_ok = (fetch_url.host_allowed(parsed.hostname, ("mp3.pm",)) if site == "mp3pm"
+                         else parsed.netloc == urlsplit(base).netloc)
+            if parsed.scheme != "https" or not origin_ok or parsed.username or parsed.password or parsed.port not in (None, 443):
                 raise Refused("catalog search redirected outside its HTTPS origin")
             with self.request(url) as response:
                 if response.is_redirect:
