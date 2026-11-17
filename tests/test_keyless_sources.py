@@ -84,3 +84,17 @@ def test_run_report_has_the_http_summary(tmp_path, capsys):
     fs.run(a, {**CFG, "sources": {"order": ["ccmixter"]}}, {"ccmixter": ccm}, lambda c: [], sleep=lambda s: None)
     rep = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert rep["http"] == {"ccmixter.org": {"requests": 1, "statuses": {"200": 1}}} and rep["checked"] == 1
+
+
+def test_probe_asks_every_source_without_early_stop_and_stats_count_per_source():
+    ok = lambda q, n, c, e: [sources.Candidate("x", "T", "A", "https://x/a.mp3", "https://creativecommons.org/licenses/by/4.0/", sec=120)] * 5
+    nc = lambda q, n, c, e: [sources.Candidate("y", "T", "A", "https://y/a.mp3", "https://creativecommons.org/licenses/by-nc/4.0/", sec=90)]
+    def key(q, n, c, e):
+        raise sources.NeedsAuth("no key")
+    cfg = {**CFG, "sources": {"order": ["local", "openverse", "jamendo", "soundcloud"]}}
+    got = sources.probe("piano", cfg, {}, {"openverse": ok, "jamendo": nc, "soundcloud": key})
+    assert [(r["source"], r["state"], r["candidates"], r["allowed"]) for r in got] == [("openverse", "ok", 5, 5), ("jamendo", "ok", 1, 0), ("soundcloud", "needs_auth", 0, 0)]
+    assert "120 s" in got[0]["example"]
+    sources.STATS.clear()
+    sources.search("piano", {**cfg, "sources": {"order": ["jamendo"]}}, {}, searchers={"jamendo": nc})
+    assert sources.STATS["jamendo"] == {"queries": 1, "candidates": 1, "allowed": 0, "matched": 0, "downloaded": 0}

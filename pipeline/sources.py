@@ -9,7 +9,7 @@ import re
 from dataclasses import asdict, dataclass
 from urllib.parse import quote
 
-from .common import ROOT, NeedsAuth, get_json, parse_name, license_ok, load_config, safe_err, status
+from .common import ROOT, NeedsAuth, get_json, license_key, parse_name, license_ok, load_config, safe_err, status
 
 
 @dataclass
@@ -144,6 +144,15 @@ def matches(artist, title, c, sec=0):
     return not (sec and c.sec and abs(c.sec - sec) > 0.15 * sec)
 
 
+STATS = {}  # per source for the run report: queries / candidates / allowed (license ok) / matched (title+artist+length) / downloaded
+
+
+def bump(name, **kw):
+    s = STATS.setdefault(name, {"queries": 0, "candidates": 0, "allowed": 0, "matched": 0, "downloaded": 0})
+    for k, v in kw.items():
+        s[k] += v
+
+
 def search(q, cfg=None, env=None, n=5, searchers=None):
     cfg = cfg or load_config()
     env = os.environ if env is None else env
@@ -161,9 +170,11 @@ def search(q, cfg=None, env=None, n=5, searchers=None):
             statuses.append(status(name, "needs_auth", str(e)))
             continue
         except Exception as e:  # network/API failure: fall through to the next source
+            bump(name, queries=1)
             statuses.append(status(name, "unavailable", safe_err(e)))
             continue
         ok = [c for c in res if c.source == "local" or license_ok(c.license or c.license_url, allowed)]
+        bump(name, queries=1, candidates=len(res), allowed=len(ok))
         statuses.append(status(name, "ok" if ok else "empty", f"{len(ok)}/{len(res)} allowed"))
         found += ok
         if len(found) >= n:
@@ -171,7 +182,34 @@ def search(q, cfg=None, env=None, n=5, searchers=None):
     return found[:n], statuses
 
 
+def probe(q="piano", cfg=None, env=None, searchers=None):
+    """One test query to EVERY configured source (no early stop): what each one answers. -> [{source, state, candidates, allowed, example}]"""
+    cfg = cfg or load_config()
+    env = os.environ if env is None else env
+    out = []
+    for name in cfg["sources"]["order"]:
+        if name == "local":
+            continue
+        try:
+            res = (searchers or SEARCHERS)[name](q, 5, cfg, env)
+        except NeedsAuth as e:
+            out.append({"source": name, "state": "needs_auth", "candidates": 0, "allowed": 0, "example": str(e)[:80]})
+            continue
+        except Exception as e:
+            out.append({"source": name, "state": "unavailable", "candidates": 0, "allowed": 0, "example": safe_err(e)})
+            continue
+        ok = [c for c in res if license_ok(c.license or c.license_url, cfg["licenses_allowed"])]
+        ex = next(iter(ok or res), None)
+        out.append({"source": name, "state": "ok" if res else "empty", "candidates": len(res), "allowed": len(ok),
+                    "example": f'"{ex.title}" by {ex.artist}, {int(ex.sec)} s, {license_key(ex.license or ex.license_url) or ex.license or "?"}' if ex else ""})
+    return out
+
+
 if __name__ == "__main__":
     import sys
+    if sys.argv[1:2] == ["--probe"]:
+        for r in probe(" ".join(sys.argv[2:]) or "piano"):
+            print(f'{r["source"]:11} {r["state"]:12} candidates {r["candidates"]}, license allowed {r["allowed"]}  {r["example"]}')
+        sys.exit(0)
     c, s = search(" ".join(sys.argv[1:]) or "piano")
     print(json.dumps({"candidates": [x.dict() for x in c], "statuses": s}, ensure_ascii=False, indent=1))

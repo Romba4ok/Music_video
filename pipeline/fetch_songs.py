@@ -136,6 +136,8 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
     cands, sts = sources.search(f'{w["artist"]} {w["title"]}', cfg, n=8, searchers=searchers)
     dead.update(x["source"] for x in sts if x["state"] == "unavailable")
     good = [c for c in cands if sources.matches(w["artist"], w["title"], c, w["sec"])]
+    for c in good:
+        sources.bump(c.source, matched=1)
     if not good:
         return None, f"no licensed match ({len(cands)} found, 0 matching; {', '.join([s['source'] + ':' + s['state'] for s in sts] + [d + ':unavailable' for d in pre_dead])})"
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -150,6 +152,7 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
             side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
             side["source_site"] = c.source
             (Path(out) / (name + ".license.json")).write_text(json.dumps(side, ensure_ascii=False, indent=1), encoding="utf-8")
+            sources.bump(c.source, downloaded=1)
             return name, f"{c.source}: {c.attribution()}"
         except Exception as e:  # this candidate is bad (refused, damaged, preview): try the next one
             last = f"{c.source}: {type(e).__name__} {str(e)[:100]}"
@@ -326,6 +329,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     sig = search_signature(cfg)
     cands = wanted(cfg, qtext, fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
+    sources.STATS.clear()
     octx = official.Ctx(cache_file=state_f.with_name("musicbrainz-cache.json"))  # MusicBrainz / page answers are shared by all songs of this run
     if cfg.get("official", {}).get("enabled", True) and not octx.contact:
         print("songs: MUSICBRAINZ_CONTACT не настроен: MusicBrainz получит User-Agent 'VYBEX/1.0' без контакта (задайте переменную репозитория с вашим адресом или URL проекта)", file=sys.stderr)
@@ -397,7 +401,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         official.save_links(state_f.with_name("song-links.md"), links, today)
     report = {"songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
-              "skip_reasons": skip_kinds, "source_states": src_states, "http": http_summary(), "musicbrainz_contact": bool(octx.contact), "signature": sig, "force_retry": bool(a.force_retry)}
+              "skip_reasons": skip_kinds, "source_states": src_states, "sources": sources.STATS, "http": http_summary(), "musicbrainz_contact": bool(octx.contact), "signature": sig, "force_retry": bool(a.force_retry)}
     print(json.dumps(report, ensure_ascii=False))
     return got
 
