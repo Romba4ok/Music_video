@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
       - name: Check runner location and public audio pages
         shell: bash
         run: |
@@ -44,7 +45,11 @@ jobs:
           URLS
           curl --silent --show-error --max-time 20 --max-filesize 2097152 \
             https://mp3.pm/i/js/_main_min.591308b4.js > probe/mp3pm.js || true
-      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio-http-probe
+          path: probe/
+          retention-days: 3
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -161,4 +166,5 @@ jobs:
             out/songs.json
             out/verified.json
             out/drive-audio.json
+            out/have.txt
           retention-days: 3
