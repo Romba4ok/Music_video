@@ -37,7 +37,13 @@ jobs:
           https://muz-top.me/track/211531-enzro-ty-ne-bojsya-nochi-online
           https://spaces.im/music-online/
           https://9545933-dua-lipa.mp3.pm/song/77040035-lost-in-your-light-feat-miguel/
+          https://s-xcho.mp3.pm/
+          https://mp3.pm/?a=redirect&q=Xcho
+          https://hitparad.fm/
+          https://muzlap.com/
           URLS
+          curl --silent --show-error --max-time 20 --max-filesize 2097152 \
+            https://mp3.pm/i/js/_main_min.591308b4.js > probe/mp3pm.js || true
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
