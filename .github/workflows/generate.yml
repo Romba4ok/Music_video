@@ -2,6 +2,8 @@ name: generate
 # Google Drive in/out. UNTESTED on GitHub Actions (cannot be run locally): first run via "Run workflow", read the log, then rely on cron.
 # Drive folder (its ID = secret GDRIVE_FOLDER_ID):  audio/ (you drop songs)  ready/<date>/ (results)  done/ (processed songs)  queue.txt (optional)
 # No "push" trigger: a code push must never generate videos or put posts into the TikTok queue.
+# Song search is a SEPARATE daily workflow (fetch-songs.yml, own schedule). This one only generates: the light job `check` counts the audio files in Drive;
+# with none, the heavy job (Node, Remotion, Whisper, Claude, render) is not started at all and the run ends green with status no_audio.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +13,9 @@ on:
       count:
         description: how many videos (scheduled runs use repo variable VYBEX_POSTS_PER_DAY, default 3)
         default: ""
+      search:
+        description: "true = run the song search (fetch-songs) first, then generate. Default false: the daily fetch-songs run does the search"
+        default: "false"
       buffer:
         description: "Buffer mode for this run only: plan (checks, creates nothing) | draft | queue | now (publish immediately) | off. Empty = repo variable VYBEX_BUFFER, else now"
         default: ""
@@ -28,15 +33,50 @@ env:
   RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
   VYBEX_OWNER_DECLARES_RIGHTS: "1"  # files you put in Drive/audio = your declaration that you may use them
 jobs:
-  # Step 1: top Drive/audio up to 3 songs (queue, Russian chart songs, open Russian tracks). Step 2 below needs whatever is there, even if this step found nothing.
-  fetch:
+  search:   # optional: only when started with search=true
+    if: ${{ github.event.inputs.search == 'true' }}
     uses: ./.github/workflows/fetch-songs.yml
     with:
       target: "3"
     secrets: inherit
+  check:    # light: no ffmpeg/Node/Whisper. Counts the audio files in Drive/audio without downloading them and runs the list guard on their names.
+    needs: search
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      audio: ${{ steps.n.outputs.audio }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: sudo apt-get update && sudo apt-get install -y rclone && pip install requests
+      - name: Drive token
+        env:
+          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        run: |
+          echo "::add-mask::$RT"
+          python -c "import json,os;print('RCLONE_CONFIG_GD_TOKEN='+json.dumps({'access_token':'','token_type':'Bearer','refresh_token':os.environ['RT'],'expiry':'2000-01-01T00:00:00Z'}))" >> "$GITHUB_ENV"
+      - name: Count audio files in Drive/audio
+        id: n
+        shell: bash
+        run: |
+          rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
+          rclone lsf gd:audio | grep -v '/$' | grep -v '\.license\.json$' > out-audio.txt || true
+          N=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' out-audio.txt || true)
+          echo "audio=$N" >> "$GITHUB_OUTPUT"
+          if [ "$N" = "0" ]; then echo "status: no_audio - Drive/audio is empty, nothing to generate (the heavy job is skipped; the daily fetch-songs run fills the folder)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else { echo "Audio files in Drive/audio: $N"; sed 's/^/- /' out-audio.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi
+      - name: "Guard: only songs from the list (queue.md). Anything else in Drive/audio stops the workflow"
+        if: steps.n.outputs.audio != '0'
+        run: |
+          mkdir -p names && while read -r f; do : > "names/$f"; done < out-audio.txt
+          python -m pipeline songs --check-list names
   generate:
-    needs: fetch
-    if: ${{ !cancelled() }}  # a failed or empty download must not stop the videos
+    needs: check
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.audio != '0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

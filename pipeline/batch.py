@@ -257,7 +257,16 @@ def main(argv):
     ap.add_argument("--lang")
     a = ap.parse_args(argv)
     s = run_batch(a.mode, a.count, a.date, lang=a.lang)
+    s["status"] = batch_status(s)
     print(json.dumps({k: v for k, v in s.items() if k != "songs"}, ensure_ascii=False))
     for r in s["songs"]:
         print(r["song"], r["stages"], *(r.get("qa") or []), sep=" | ")
-    return 0 if s["succeeded"] else 1
+    return 1 if s["status"] == "failed" else 0  # no_audio is a normal day (the daily search has not found a licensed file yet), not a failed workflow
+
+
+def batch_status(s):
+    """ok = at least one video; no_audio = nothing was made only because no song had an audio file (no Whisper / Claude / render was spent);
+    failed = something broke (bad audio, low confidence, render / QA failure, exception)."""
+    if s["succeeded"]:
+        return "ok"
+    return "no_audio" if all(r["stages"].get("fetch") == "no_audio" and len(r["stages"]) == 1 for r in s["songs"]) else "failed"

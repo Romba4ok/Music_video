@@ -1,9 +1,11 @@
 name: fetch-songs
-# First job of every generate run (workflow_call) and a manual button: tops Drive/audio up to `target` songs (default 3), then generate makes the videos.
+# Daily search (schedule), a manual button and an optional first step of generate (search=true): tops Drive/audio up to `target` songs (default 3), then generate makes the videos.
 # Songs: only queue.md and the Russian part of the KZ chart, each searched in sources that allow download (CC0 / public domain / CC-BY; see docs/rights.md).
 # A queue.md song without a licensed file gets its official 30 s preview (Apple/Deezer) for lyric timing only: such a video is made in mode tiktok, the sound is added in TikTok.
 # Songs with no licensed full recording are skipped and remembered (Drive/state/songs.md). No DRM or paywall is bypassed, nothing is ripped from YouTube/streaming.
 on:
+  schedule:
+    - cron: "0 1 * * *"   # daily search, 06:00 Almaty: separate from generate, which only uses what is already in Drive/audio
   workflow_call:
     inputs:
       target:
