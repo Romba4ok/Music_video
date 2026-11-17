@@ -26,11 +26,13 @@ SITES = {
     "hitmo": ("https://ru.hitmoz.org", "/search"),
     "sefon": ("https://sefon.pro", "/search/"),
     "mp3pm": ("https://mp3.pm", "/"),
+    "muzlap": ("https://muzlap.com", "/"),
 }
 DOWNLOAD_HOSTS = {
     "hitmo": ("ru.hitmoz.org", "deliciousoranges.com"),
     "sefon": ("sefon.pro",),
     "mp3pm": ("mp3.pm",),
+    "muzlap": ("muzlap.com",),
 }
 UA = "vybex-fetch/1.0"
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -69,6 +71,12 @@ class TrackHTML(HTMLParser):
                 urlsplit(target).scheme == "https" and urlsplit(target).path.startswith("/download/")
             ) else "", "landing": ""}
             self.depth = len(self.stack)
+        elif self.site == "muzlap" and "js-item" in classes and attrs.get("data-track"):
+            self.finish()
+            target = urljoin(self.page, attrs["data-track"])
+            self.card = {"artist": [attrs.get("data-artist", "")], "title": [attrs.get("data-title", "")],
+                         "text": [], "url": target if urlsplit(target).scheme == "https" else "", "landing": ""}
+            self.depth = len(self.stack)
         if self.card and tag == "a":
             href = attrs.get("href") or ""
             target = urljoin(self.page, href)
@@ -77,7 +85,7 @@ class TrackHTML(HTMLParser):
                     self.card["url"] = target if urlsplit(target).path.startswith("/get/music/") else ""
                 elif self.site == "sefon" and urlsplit(target).path.endswith(".mp3") and "/prev/" not in target:
                     self.card["url"] = target
-                if urlsplit(target).path.startswith(("/song/", "/mp3/")):
+                if urlsplit(target).path.startswith(("/song/", "/mp3/")) or (self.site == "muzlap" and urlsplit(target).path.endswith(".html")):
                     self.card["landing"] = target
         if tag not in VOID_TAGS:
             self.stack.append((tag, classes))
@@ -174,10 +182,11 @@ class CatalogClient:
                 raise Refused("AUDIO_PROXY_URL must be an http:// or https:// proxy URL with a host and port")
             self.proxies = {"http": proxy, "https": proxy}
 
-    def request(self, url):
+    def request(self, url, *, data=None):
         for attempt in range(3):
             try:
-                response = self.get(url, headers={"User-Agent": UA}, timeout=(6, 15), allow_redirects=False)
+                options = {"headers": {"User-Agent": UA}, "timeout": (6, 15), "allow_redirects": False}
+                response = self.get(url, **options) if data is None else self.post(url, data=data, **options)
                 HTTP_LOG.append((urlsplit(url).hostname, response.status_code))
                 if response.status_code == 403:
                     log_forbidden(response, url)
@@ -195,17 +204,32 @@ class CatalogClient:
 
     def search(self, site, query):
         base, path = SITES[site]
-        params = {"a": "redirect", "q": query} if site == "mp3pm" else {"q": query}
-        url = base + path + "?" + urlencode(params)
+        if site == "mp3pm":
+            # This is the public search form's own endpoint (SearchElementCtrl).
+            # Its obsolete GET form returns the home page for every query.
+            with self.request(base + "/public/api.search.php", data={"q": query}) as response:
+                target = response.text.strip()
+                if target.startswith('"'):
+                    target = json.loads(target)
+                if not isinstance(target, str) or not target or "<" in target:
+                    raise Refused("MP3.pm search did not return a public result URL")
+                url = urljoin(base, target)
+        else:
+            url = base + path + "?" + urlencode({"q": query})
+        data = {"do": "search", "subaction": "search", "story": query} if site == "muzlap" else None
+        if site == "muzlap":
+            url = base + path
         for _ in range(6):
             parsed = urlsplit(url)
             origin_ok = (fetch_url.host_allowed(parsed.hostname, ("mp3.pm",)) if site == "mp3pm"
                          else parsed.netloc == urlsplit(base).netloc)
             if parsed.scheme != "https" or not origin_ok or parsed.username or parsed.password or parsed.port not in (None, 443):
                 raise Refused("catalog search redirected outside its HTTPS origin")
-            with self.request(url) as response:
+            with self.request(url, data=data) as response:
                 if response.is_redirect:
                     url = urljoin(url, response.headers["Location"])
+                    if response.status_code in (301, 302, 303):
+                        data = None
                     continue
                 return parse_tracks(response.text, site, url)
         raise Refused("too many catalog redirects")
@@ -215,6 +239,11 @@ class CatalogClient:
         if self.proxies:
             kwargs["proxies"] = self.proxies
         return self.http.get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        if self.proxies:
+            kwargs["proxies"] = self.proxies
+        return self.http.post(url, **kwargs)
 
 
 def searchers(client=None):
