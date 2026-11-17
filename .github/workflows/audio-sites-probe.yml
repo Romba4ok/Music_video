@@ -7,9 +7,6 @@ permissions:
   contents: read
 jobs:
   probe:
-    concurrency:
-      group: vybex-drive
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -66,7 +63,32 @@ jobs:
           mkdir -p out
           python -m pipeline.catalog_audio --artist 'Ken Dala' --title 'Без тебя' --sites mp3pm \
             --download-only --out out/aac-probe --state out/aac-probe-memory.md --max 1 > out/aac-probe.json
-          ffprobe -v error -show_entries format=format_name,duration,size -of json out/aac-probe/*.mp3
+          ffprobe -v error -show_entries format=format_name,duration,size -of json out/aac-probe/*.mp3 | tee out/aac-ffprobe.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audio-aac-probe
+          path: |
+            out/aac-probe.json
+            out/aac-ffprobe.json
+          retention-days: 3
+  drive:
+    needs: probe
+    concurrency:
+      group: vybex-drive
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audio and Drive tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg rclone
+          pip install requests
       - name: Read existing Drive queue and memory
         env:
           RCLONE_CONFIG_GD_TYPE: drive
