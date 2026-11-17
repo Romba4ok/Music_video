@@ -29,8 +29,8 @@ from .common import HTTP_LOG, Refused, license_ok, load_config, parse_name, safe
 from .fetch_songs import key, load_memory, save_memory, to_mp3
 
 EXT_BY_TYPE = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/flac": ".flac",
-               "audio/x-flac": ".flac", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".m4a", "application/octet-stream": ""}
-FORMAT_OF = {".mp3": "mp3", ".wav": "wav", ".flac": "flac", ".m4a": "mp4"}  # substring of ffprobe format_name
+               "audio/x-flac": ".flac", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac", "application/octet-stream": ""}
+FORMAT_OF = {".mp3": "mp3", ".wav": "wav", ".flac": "flac", ".m4a": "mp4", ".aac": "aac"}  # substring of ffprobe format_name
 DEFAULTS = {"allowed_hosts": [], "min_sec": 60, "max_sec": 600, "max_mb": 80, "timeout": 30, "max_redirects": 5, "retries": 2}
 
 
@@ -147,6 +147,11 @@ def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sh
             raise Refused(f"тип файла не mp3/wav/flac/m4a (расширение/тип: {ext or ctype or 'нет'})")
         raw = partial.rename(tmp / f"download{ext}")
         fmt = _format_name(raw)
+        # Some catalogs advertise .mp3 URLs but deliver ADTS AAC.
+        # Require both the MIME and ffprobe to confirm that container.
+        if ctype == "audio/aac" and fmt == "aac" and ext != ".aac":
+            raw = raw.rename(tmp / "download.aac")
+            ext = ".aac"
         if FORMAT_OF[ext] not in fmt:
             raise Refused(f"содержимое не {ext[1:]} (ffprobe: {fmt or 'не распознано'})")
         path, _ = (check or download.check_audio)(raw, min_sec=dc["min_sec"], max_sec=dc["max_sec"], fixdir=tmp / "fix")

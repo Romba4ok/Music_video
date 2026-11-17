@@ -26,6 +26,10 @@ def make_audio(path, kind, dur=6):
 @pytest.fixture()
 def server(tmp_path):
     files = {f"/song.{k}": (make_audio(tmp_path / f"s.{k}", k), TYPES[k]) for k in TYPES}
+    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6',
+                    '-c:a', 'aac', '-f', 'adts', str(tmp_path / 's.aac')], check=True)
+    files['/aac-named-mp3.mp3'] = ((tmp_path / 's.aac').read_bytes(), 'audio/aac')
+    files['/invalid-aac.mp3'] = (b'not audio at all' * 100, 'audio/aac')
     files["/fake.mp3"] = (b"<html>not audio at all</html>" * 50, "audio/mpeg")  # HTML renamed to .mp3
     files["/page"] = (b"<html></html>", "text/html")
     files["/big.mp3"] = (b"x" * (6 * 1024 * 1024), "audio/mpeg")
@@ -97,6 +101,20 @@ def test_redirect_inside_the_allowlist_is_followed_and_outside_is_refused(server
         get(server, "/out", tmp_path)
     with pytest.raises(Refused, match="перенаправлений"):
         get(server, "/loop", tmp_path)
+
+
+def test_real_aac_with_mp3_url_is_verified_and_converted(server, tmp_path):
+    name, digest, _ = fetch_url.fetch_download_only(server + '/aac-named-mp3.mp3', 'A', 'T', tmp_path / 'out', CFG)
+    path = tmp_path / 'out' / name
+    assert fetch_url._format_name(path) == 'mp3'
+    assert digest == download.file_sha256(tmp_path / 's.aac')
+    assert fetch_url.inspect_audio(path, min_sec=3)['technical'] == 'verified'
+
+
+def test_aac_header_does_not_make_non_audio_acceptable(server, tmp_path):
+    with pytest.raises(Refused, match='ffprobe'):
+        fetch_url.fetch_download_only(server + '/invalid-aac.mp3', 'A', 'T', tmp_path / 'out', CFG)
+    assert not list((tmp_path / 'out').glob('*.mp3'))
 
 
 def test_host_not_on_the_list_and_bad_scheme_are_refused_before_any_request(tmp_path):

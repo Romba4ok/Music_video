@@ -60,6 +60,13 @@ jobs:
           pip install requests pytest
       - name: Downloader tests
         run: python -m pytest tests/test_catalog_audio.py tests/test_fetch_songs.py tests/test_fetch_url.py -q
+      - name: Check the real AAC response advertised as MP3
+        continue-on-error: true
+        run: |
+          mkdir -p out
+          python -m pipeline.catalog_audio --artist 'Ken Dala' --title 'Без тебя' --sites mp3pm \
+            --download-only --out out/aac-probe --state out/aac-probe-memory.md --max 1 > out/aac-probe.json
+          ffprobe -v error -show_entries format=format_name,duration,size -of json out/aac-probe/*.mp3
       - name: Read existing Drive queue and memory
         env:
           RCLONE_CONFIG_GD_TYPE: drive
@@ -103,15 +110,21 @@ jobs:
             cp accounts/main/queue.md out/probe-queue.md
           fi
           : > out/have.txt
+          : > out/current-audio.txt
           for folder in audio done; do
             if grep -qx "$folder/" out/drive-root.txt; then
               rclone lsf "gd:$folder" --files-only >> out/have.txt
+              if [ "$folder" = audio ]; then
+                rclone lsf gd:audio --files-only > out/current-audio.txt
+              fi
             fi
           done
-          # Save three requested queue/chart tracks using the existing memory and fallback.
+          HAVE=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac)$' out/current-audio.txt || true)
+          NEED=$((3 - HAVE)); [ "$NEED" -lt 0 ] && NEED=0
+          echo "Drive/audio has $HAVE audio files; download up to $NEED to reach three."
           python -m pipeline songs --download-only --force-retry --queue out/probe-queue.md \
             --out accounts/main/audio --have-file out/have.txt --state out/songs-memory.md \
-            --max 3 --tries 40 | tee out/songs.json
+            --max "$NEED" --tries 40 | tee out/songs.json
       - name: Verify saved audio and repeat without downloading duplicates
         shell: bash
         run: |
@@ -133,6 +146,10 @@ jobs:
               verified.append(result)
           Path('out/verified.json').write_text(json.dumps(verified, ensure_ascii=False, indent=2))
           if not verified:
+              have = Path('out/current-audio.txt').read_text().splitlines()
+              if sum(Path(n).suffix.lower() in ('.mp3', '.wav', '.m4a', '.ogg', '.flac') for n in have) >= 3:
+                  print('At least three files already exist in Drive/audio; no duplicate download needed.')
+                  raise SystemExit(0)
               raise SystemExit('No matching audio downloaded; inspect source responses')
           before = {p.name: (p.stat().st_mtime_ns, download.file_sha256(p)) for p in Path('accounts/main/audio').glob('*.mp3')}
           Path('out/repeat-queue.md').write_text('\n'.join(f"{fetch_songs.parse_name(p.stem)[0]} | {fetch_songs.parse_name(p.stem)[1]}" for p in Path('accounts/main/audio').glob('*.mp3')))
@@ -150,13 +167,38 @@ jobs:
       - name: Upload verified audio and confirm Drive checksum
         shell: bash
         run: |
-          rclone copy accounts/main/audio gd:audio --immutable
-          rclone check accounts/main/audio gd:audio --one-way
+          if compgen -G 'accounts/main/audio/*.mp3' > /dev/null; then
+            rclone copy accounts/main/audio gd:audio --immutable
+            rclone check accounts/main/audio gd:audio --one-way
+            echo 'New audio uploaded and one-way checksum verification passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Existing Drive/audio files preserved; no duplicate downloads or uploads.' >> "$GITHUB_STEP_SUMMARY"
+          fi
           rclone mkdir gd:state
           rclone copyto out/songs-memory.md gd:state/songs.md
           rclone lsjson gd:audio --files-only --hash > out/drive-audio.json
           cat out/verified.json >> "$GITHUB_STEP_SUMMARY"
-          echo 'Drive upload and one-way checksum verification passed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Read Drive files back and verify formats
+        shell: bash
+        run: |
+          rclone copy gd:audio out/drive-verification --include '*.mp3' --include '*.mp3.license.json'
+          rclone check out/drive-verification gd:audio --one-way
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          from pipeline import fetch_url
+          rows = []
+          for path in sorted(Path('out/drive-verification').glob('*.mp3')):
+              row = fetch_url.inspect_audio(path, min_sec=90)
+              probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries',
+                  'format=duration:stream=codec_name,sample_rate,channels', '-of', 'json', str(path)], text=True))
+              side = Path(str(path) + '.license.json')
+              row.update(name=path.name, ffprobe=probe, source_site=json.loads(side.read_text()).get('source_site') if side.exists() else 'existing')
+              rows.append(row)
+          assert len(rows) >= 3, 'Fewer than three verified audio files in Drive/audio'
+          Path('out/drive-verified.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2))
+          print(json.dumps(rows, ensure_ascii=False))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -167,4 +209,6 @@ jobs:
             out/verified.json
             out/drive-audio.json
             out/have.txt
+            out/aac-probe.json
+            out/drive-verified.json
           retention-days: 3
