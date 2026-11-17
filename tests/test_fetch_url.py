@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from pipeline import fetch_songs, fetch_url
+from pipeline import download, fetch_songs, fetch_url
 from pipeline.common import Refused
 
 CFG = {"licenses_allowed": ["cc0", "pdm", "by"], "sources": {"order": []},
@@ -29,6 +29,7 @@ def server(tmp_path):
     files["/fake.mp3"] = (b"<html>not audio at all</html>" * 50, "audio/mpeg")  # HTML renamed to .mp3
     files["/page"] = (b"<html></html>", "text/html")
     files["/big.mp3"] = (b"x" * (6 * 1024 * 1024), "audio/mpeg")
+    interrupted = 0
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -40,6 +41,7 @@ def server(tmp_path):
             self.end_headers()
 
         def do_GET(self):
+            nonlocal interrupted
             if self.path == "/redir":
                 self.redirect("/song.mp3")
             elif self.path == "/out":  # redirect to a host that is not on the list
@@ -51,6 +53,14 @@ def server(tmp_path):
             elif self.path == "/private":
                 self.send_response(403)
                 self.end_headers()
+            elif self.path == "/interrupted.mp3":
+                interrupted += 1
+                body, ctype = files["/song.mp3"]
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[:len(body) // 2] if interrupted == 1 else body)
             elif self.path in files:
                 body, ctype = files[self.path]
                 self.send_response(200)
@@ -129,6 +139,23 @@ def test_the_same_file_is_not_saved_twice(server, tmp_path):
     _, sha, _ = get(server, "/song.mp3", tmp_path)
     with pytest.raises(fetch_url.Duplicate):
         get(server, "/song.mp3", tmp_path, known_sha={sha[:16]})
+
+
+def test_interrupted_download_restarts_and_preserves_exact_bytes(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(download.time, "sleep", lambda seconds: None)
+    name, sha, _ = get(server, "/interrupted.mp3", tmp_path)
+    assert (tmp_path / "out" / name).read_bytes() == (tmp_path / "s.mp3").read_bytes()
+    assert sha == download.file_sha256(tmp_path / "s.mp3")
+
+
+def test_failed_direct_link_does_not_stop_the_queue(server, tmp_path, monkeypatch):
+    monkeypatch.setenv("VYBEX_OWNER_DECLARES_RIGHTS", "1")
+    q = tmp_path / "queue.md"
+    q.write_text(f"A | Missing | | {server}/missing.mp3\nB | Good | | {server}/song.mp3\n", encoding="utf-8")
+    args = Namespace(out=tmp_path / "out", have_file=None, state=tmp_path / "m.md", queue=q, max=5, tries=40,
+                     record_used=None, prune=None, discover=False, previews=False, check_list=None, force_retry=False)
+    assert fetch_songs.run(args, CFG, {}, lambda c: [], sleep=lambda s: None) == ["B - Good.mp3"]
+    assert "HTTP 404" in next(iter(fetch_songs.load_memory(args.state)["skipped"].values()))["detail"]
 
 
 def test_cli_writes_the_memory_and_skips_a_known_song(server, tmp_path, monkeypatch):

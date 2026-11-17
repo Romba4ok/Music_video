@@ -12,21 +12,20 @@ No authentication, paywall, DRM or access limit is bypassed: a link that needs a
 python -m pipeline url <URL> --artist A --title T [--license by | --rights owner] [--out out/fetched] [--state out/songs-memory.md]
 """
 import argparse
-import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
 from . import download
-from .common import Refused, license_ok, load_config, parse_name, safe_err
+from .common import HTTP_LOG, Refused, license_ok, load_config, parse_name, safe_err
 from .fetch_songs import key, load_memory, save_memory, to_mp3
 
 EXT_BY_TYPE = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/flac": ".flac",
@@ -37,6 +36,10 @@ DEFAULTS = {"allowed_hosts": [], "min_sec": 60, "max_sec": 600, "max_mb": 80, "t
 
 class Duplicate(Refused):
     """The same file (sha256) or song is already saved: not an error, nothing is written."""
+
+
+class DownloadUnavailable(RuntimeError):
+    """The network failed after the allowed retries."""
 
 
 def host_allowed(host, allowed):
@@ -58,26 +61,15 @@ def _open(url, dc, http):
     cur = url
     for _ in range(dc["max_redirects"] + 1):
         _check_hop(cur, dc["allowed_hosts"])
-        last = None
-        for _try in range(dc["retries"] + 1):
-            try:
-                r = http.get(cur, stream=True, timeout=dc["timeout"], allow_redirects=False, headers={"User-Agent": "vybex-fetch/1.0"})
-                if r.status_code >= 500:
-                    last = RuntimeError(f"HTTP {r.status_code}")
-                    r.close()
-                    continue
-                break
-            except (requests.Timeout, requests.ConnectionError) as e:
-                last = e
-        else:
-            raise RuntimeError(f"не удалось скачать: {type(last).__name__} {str(last)[:80]}")
+        r = http.get(cur, stream=True, timeout=dc["timeout"], allow_redirects=False, headers={"User-Agent": "vybex-fetch/1.0"})
+        HTTP_LOG.append((urlparse(cur).hostname, r.status_code))
         if 300 <= r.status_code < 400 and r.headers.get("Location"):
             cur = urljoin(cur, r.headers["Location"])
             r.close()
             continue
         if r.status_code in (401, 403):
+            r.close()
             raise Refused(f"HTTP {r.status_code}: нужен вход или доступ закрыт (не обходится)")
-        r.raise_for_status()
         return r
     raise Refused(f"больше {dc['max_redirects']} перенаправлений")
 
@@ -97,44 +89,67 @@ def fetch(url, artist, title, out, cfg=None, license="", rights="", http=request
     env = os.environ if env is None else env
     if not (license and license_ok(license, cfg["licenses_allowed"])) and not (rights == "owner" and env.get("VYBEX_OWNER_DECLARES_RIGHTS") == "1"):
         raise Refused("нет подтверждения прав: нужна лицензия CC0/PD/CC-BY для ссылки или rights=owner с декларацией владельца")
+    return _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sha, check)
+
+
+def inspect_audio(path, min_sec=20, max_sec=600):
+    """Inspect a local audio file independently of its usage rights."""
+    path = Path(path)
+    format_name = _format_name(path)
+    if not any(name in format_name.split(",") for name in ("mp3", "wav", "flac", "ogg", "mov", "mp4", "m4a", "aac")):
+        raise Refused(f"unrecognized audio format: {format_name}")
+    # A failed verification must not alter the supplied file.
+    with TemporaryDirectory() as staging:
+        usable, notes = download.check_audio(path, min_sec=min_sec, max_sec=max_sec, fixdir=Path(staging))
+        return {"file": str(path.resolve()), "format": format_name, "bytes": path.stat().st_size,
+                "sha256": download.file_sha256(path), "needs_repair": usable != path, "notes": notes,
+                "technical": "verified", "usage_rights": "not_evaluated"}
+
+
+def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sha, check):
+    """Transfer and verify bytes after the caller has decided the usage policy."""
     out = Path(out)
-    tmp = out / "_tmp"
-    tmp.mkdir(parents=True, exist_ok=True)
-    r = _open(url, dc, http)
-    try:
-        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype.startswith("text/") or "html" in ctype or "json" in ctype:
-            raise Refused(f"это не аудио (Content-Type {ctype})")
-        if int(r.headers.get("Content-Length") or 0) > dc["max_mb"] * 1024 * 1024:
-            raise Refused(f"файл больше {dc['max_mb']} МБ")
+    out.mkdir(parents=True, exist_ok=True)
+    ctype = ""
+
+    def open_response():
+        nonlocal ctype
+        response = _open(url, dc, http)
+        ctype = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        return response
+
+    with TemporaryDirectory(dir=out) as staging:
+        tmp = Path(staging)
+        partial = tmp / "download.part"
+        try:
+            digest = download.stream_audio(open_response, partial, dc["max_mb"] * 1024 * 1024, dc["retries"])
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            raise DownloadUnavailable(f"не удалось скачать: {safe_err(e)}") from e
+        except Refused as e:
+            if str(e) == "file too large":
+                raise Refused(f"файл больше {dc['max_mb']} МБ") from e
+            if str(e).startswith("response is not audio:"):
+                raise Refused(f"это не аудио (Content-Type {ctype})") from e
+            raise
+        if digest in known_sha or digest[:16] in known_sha:
+            raise Duplicate("такой файл (sha256) уже скачан")
         ext = Path(unquote(urlparse(url).path)).suffix.lower()
         if ext not in FORMAT_OF:
             ext = EXT_BY_TYPE.get(ctype, "")
         if ext not in FORMAT_OF:
             raise Refused(f"тип файла не mp3/wav/flac/m4a (расширение/тип: {ext or ctype or 'нет'})")
-        raw, sha, size = tmp / f"download{ext}", hashlib.sha256(), 0
-        with open(raw, "wb") as f:
-            for chunk in r.iter_content(65536):
-                size += len(chunk)
-                if size > dc["max_mb"] * 1024 * 1024:
-                    raise Refused(f"файл больше {dc['max_mb']} МБ")
-                sha.update(chunk)
-                f.write(chunk)
-    finally:
-        r.close()
-    digest = sha.hexdigest()
-    if digest in known_sha or digest[:16] in known_sha:
-        raw.unlink(missing_ok=True)
-        raise Duplicate("такой файл (sha256) уже скачан")
-    fmt = _format_name(raw)
-    if FORMAT_OF[ext] not in fmt:
-        raise Refused(f"содержимое не {ext[1:]} (ffprobe: {fmt or 'не распознано'})")
-    path, _ = (check or download.check_audio)(raw, min_sec=dc["min_sec"], max_sec=dc["max_sec"], fixdir=tmp / "fix")
-    name = f'{download._slug(artist)} - {download._slug(title)}.mp3'
-    to_mp3(path, out / name)
-    (out / (name + ".license.json")).write_text(json.dumps({
-        "attribution": f'"{title}" by {artist} ({url})' if license else "", "license": license or "owner-declared", "source": url,
-        "rights": rights or "license", "sha256": digest, "direct_url": True}, ensure_ascii=False, indent=1), encoding="utf-8")
+        raw = partial.rename(tmp / f"download{ext}")
+        fmt = _format_name(raw)
+        if FORMAT_OF[ext] not in fmt:
+            raise Refused(f"содержимое не {ext[1:]} (ffprobe: {fmt or 'не распознано'})")
+        path, _ = (check or download.check_audio)(raw, min_sec=dc["min_sec"], max_sec=dc["max_sec"], fixdir=tmp / "fix")
+        name = f'{download._slug(artist)} - {download._slug(title)}.mp3'
+        final = to_mp3(path, tmp / name)
+        download._sidecar(final, {
+            "attribution": f'"{title}" by {artist} ({url})' if license else "", "license": license or "owner-declared", "source": url,
+            "rights": rights or "license", "sha256": digest, "direct_url": True,
+        })
+        download.publish_audio(final, final, out)
     return name, digest, f"url {urlparse(url).hostname} sha256:{digest[:16]}"
 
 
@@ -164,11 +179,10 @@ def main(argv):
     except Duplicate as e:
         print(json.dumps({"state": "duplicate", "detail": str(e)}, ensure_ascii=False))
         return 0
-    except (Refused, RuntimeError, requests.RequestException) as e:
-        print(json.dumps({"state": "refused", "detail": str(e) if isinstance(e, (Refused, RuntimeError)) else safe_err(e)}, ensure_ascii=False))
+    except (Refused, download.BadAudio, RuntimeError, requests.RequestException) as e:
+        detail = safe_err(e) if isinstance(e, requests.RequestException) else str(e)
+        print(json.dumps({"state": "refused", "detail": detail}, ensure_ascii=False))
         return 1
-    finally:
-        shutil.rmtree(Path(a.out) / "_tmp", ignore_errors=True)
 
 
 if __name__ == "__main__":

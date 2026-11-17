@@ -4,6 +4,7 @@ Never touches commercial catalogs. `local` = files the owner placed in audio_dir
 Returns (candidates, statuses); statuses say exactly what was unavailable / needs auth.
 """
 import json
+import math
 import os
 import re
 from dataclasses import asdict, dataclass
@@ -37,27 +38,45 @@ def _local(q, n, cfg, env):
     d = ROOT / cfg["audio_dir"]
     meta_file = d / "sources.json"
     meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
-    words = [w for w in re.split(r"\W+", q.lower()) if w]
+    words = _words(q)
     out = []
     for f in sorted(d.glob("*")) if d.exists() else []:
         if f.suffix.lower() not in (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".mov", ".mkv", ".webm", ".m4v"):
             continue
-        if words and not all(w in f.stem.lower() for w in words):
+        artist, title = parse_name(re.sub(r"\s+\[[^\]]+\]$", "", f.stem))
+        if len(words) == 1 and words[0] not in _words(f.stem):
             continue
-        artist, title = parse_name(f.stem)
+        if len(words) > 1 and words not in (_words(f"{artist} {title}"), _words(f.stem)):
+            continue
         lic = meta.get(f.name, {}).get("license", "owner-supplied")
         out.append(Candidate("local", title, artist, license=lic, local_path=str(f),
                              rights_declared=f.name in meta))
     return out[:n]
 
 
-def _openverse(q, n, cfg, env):
-    data = get_json("https://api.openverse.org/v1/audio/", {"q": q, "license_type": "commercial", "page_size": n})
+def _openverse(q, n, cfg, env, *, track=None):
+    params = {"license": ",".join(sorted(cfg["licenses_allowed"])), "page_size": n}
+    if track is None:
+        params["q"] = q
+    else:
+        params["creator"], params["title"] = track
+    data = get_json("https://api.openverse.org/v1/audio/", params)
     return [
-        Candidate("openverse", r.get("title") or "", r.get("creator") or "", r.get("url") or "",
+        Candidate("openverse", _openverse_title(r), r.get("creator") or "", r.get("url") or "",
                   r.get("license") or "", r.get("license_url") or "", r.get("foreign_landing_url") or "", sec=(r.get("duration") or 0) / 1000)
         for r in data.get("results", []) if r.get("url")
     ]
+
+
+def _openverse_title(record):
+    title = (record.get("title") or "").strip()
+    if record.get("source") != "wikimedia_audio":
+        return title
+    # Wikimedia titles can carry the recording ID or repeat the credited artist.
+    title = re.sub(r"\s*\(ISRC\s+[A-Z]{2}[A-Z0-9]{3}\d{7}\)$", "", title, flags=re.I)
+    parts = re.split(r"\s+[-–—]\s+", title, maxsplit=1)
+    artist = _words(record.get("creator"))
+    return parts[1] if len(parts) == 2 and artist and _words(parts[0]) == artist else title
 
 
 def _jamendo(q, n, cfg, env):
@@ -126,26 +145,22 @@ def _soundcloud(q, n, cfg, env):
 SEARCHERS = {"local": _local, "openverse": _openverse, "jamendo": _jamendo, "archive": _archive, "ccmixter": _ccmixter, "soundcloud": _soundcloud}
 
 
-# a remix/cover/preview of the wanted song is a different recording: refused unless the wanted title itself says so
-_BAD = ("remix", "cover", "karaoke", "instrumental", "live", "slowed", "sped", "nightcore", "8d", "preview", "ремикс", "кавер", "минус")
-
-
 def _words(s):
-    return [w for w in re.split(r"[\W_]+", (s or "").lower()) if w]
+    return re.findall(r"[^\W_]+", (s or "").casefold().replace("ё", "е").replace("'", "").replace("’", ""))
 
 
 def matches(artist, title, c, sec=0):
-    """Is candidate `c` the wanted recording? Title words all present, an artist word present, no remix/cover marks, length within 15% when both known."""
-    tw = _words(re.sub(r"[\(\[].*?[\)\]]", " ", title))
-    ct, ca = _words(c.title), _words(c.artist)
-    if not tw or not set(tw) <= set(ct):
+    """Match the artist and title independently, with a duration tolerance when known."""
+    aw, tw = _words(artist), _words(title)
+    if not aw or not tw or aw != _words(c.artist) or tw != _words(c.title):
         return False
-    aw = [w for w in _words(artist) if len(w) > 2]  # a one/two-letter artist name cannot be checked
-    if aw and not any(w in ca + ct for w in aw):
+    if not sec or not c.sec:
+        return True
+    try:
+        actual, expected = float(c.sec), float(sec)
+    except (TypeError, ValueError):
         return False
-    if any(b in ca + ct and b not in _words(title) for b in _BAD):
-        return False
-    return not (sec and c.sec and abs(c.sec - sec) > 0.15 * sec)
+    return math.isfinite(actual) and math.isfinite(expected) and abs(actual - expected) <= 0.15 * expected
 
 
 STATS = {}  # per source for the run report: queries / candidates / allowed (license ok) / matched (title+artist+length) / downloaded
@@ -157,29 +172,37 @@ def bump(name, **kw):
         s[k] += v
 
 
-def search(q, cfg=None, env=None, n=5, searchers=None):
-    cfg = cfg or load_config()
+def search_batches(q, cfg, env=None, n=5, searchers=None, *, track=None):
+    """Yield each source's allowed candidates and status in configured order."""
     env = os.environ if env is None else env
     searchers = searchers or SEARCHERS
     allowed = cfg["licenses_allowed"]
-    found, statuses = [], []
     for name in cfg["sources"]["order"]:
         fn = searchers.get(name)
         if not fn:
-            statuses.append(status(name, "unavailable", "unknown source"))
+            yield [], status(name, "unavailable", "unknown source")
             continue
         try:
-            res = fn(q, n, cfg, env)
+            if fn is _openverse and track:
+                res = fn(q, n, cfg, env, track=track)
+            else:
+                res = fn(q, n, cfg, env)
         except NeedsAuth as e:
-            statuses.append(status(name, "needs_auth", str(e)))
+            yield [], status(name, "needs_auth", str(e))
             continue
         except Exception as e:  # network/API failure: fall through to the next source
             bump(name, queries=1)
-            statuses.append(status(name, "unavailable", safe_err(e)))
+            yield [], status(name, "unavailable", safe_err(e))
             continue
         ok = [c for c in res if c.source == "local" or license_ok(c.license or c.license_url, allowed)]
         bump(name, queries=1, candidates=len(res), allowed=len(ok))
-        statuses.append(status(name, "ok" if ok else "empty", f"{len(ok)}/{len(res)} allowed"))
+        yield ok, status(name, "ok" if ok else "empty", f"{len(ok)}/{len(res)} allowed")
+
+
+def search(q, cfg=None, env=None, n=5, searchers=None):
+    found, statuses = [], []
+    for ok, st in search_batches(q, cfg or load_config(), env, n, searchers):
+        statuses.append(st)
         found += ok
         if len(found) >= n:
             break

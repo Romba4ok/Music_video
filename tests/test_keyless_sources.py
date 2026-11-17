@@ -15,6 +15,41 @@ CCM = [{"upload_name": "Таю", "user_name": "tasso", "user_real_name": "Tasso"
         "files": [{"download_url": "https://ccmixter.org/content/t/b.mp3", "file_format_info": {"default-ext": "mp3", "ps": "3:00"}}]}]
 
 
+def test_openverse_queries_allowed_licenses_and_normalizes_wikimedia_titles(monkeypatch):
+    def reply(url, params):
+        assert params == {"q": "Kevin MacLeod On the Passing of Time", "license": "by,cc0,pdm", "page_size": 8}
+        return {"results": [
+            {"creator": "Kevin MacLeod", "title": title, "source": "wikimedia_audio",
+             "url": "https://upload.wikimedia.org/audio", "license": "by", "duration": 225044}
+            for title in ["On the Passing of Time (ISRC USUAN1100520)",
+                          "Kevin MacLeod - On the Passing of Time",
+                          "Kevin MacLeod - On the Passing of Time (Live)"]
+        ]}
+
+    monkeypatch.setattr(sources, "get_json", reply)
+    candidates = sources._openverse("Kevin MacLeod On the Passing of Time", 8, CFG, {})
+    assert [sources.matches("Kevin MacLeod", "On the Passing of Time", c) for c in candidates] == [True, True, False]
+
+
+def test_fetch_one_searches_openverse_creator_and_title_as_separate_fields(tmp_path, monkeypatch):
+    def reply(url, params):
+        assert params == {"creator": "jarrodwhitley", "title": "0- Eldermourne - Full Song",
+                          "license": "by,cc0,pdm", "page_size": 8}
+        return {"results": [{"creator": "jarrodwhitley", "title": "0- Eldermourne - Full Song",
+                             "url": "https://cdn.freesound.org/song.mp3", "license": "cc0", "duration": 271743}]}
+
+    def dl(candidate, dest, cfg):
+        raw = dest / "song.mp3"
+        raw.write_bytes(b"audio")
+        return raw
+
+    monkeypatch.setattr(sources, "get_json", reply)
+    song = {"artist": "jarrodwhitley", "title": "0- Eldermourne - Full Song", "sec": 0}
+    cfg = {**CFG, "sources": {"order": ["openverse"]}}
+    name, _ = fs.fetch_one(song, cfg, tmp_path, dl=dl, check=lambda path, **kwargs: (path, []))
+    assert name == "jarrodwhitley - 0- Eldermourne - Full Song.mp3"
+
+
 def test_ccmixter_adapter_picks_the_mp3_reads_length_and_license_policy_drops_nc(monkeypatch):
     monkeypatch.setattr(sources, "get_json", lambda url, params=None, **k: CCM)
     got = sources._ccmixter("Tasso Таю", 5, CFG, {})

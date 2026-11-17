@@ -5,11 +5,14 @@
 - local video -> audio: requires the explicit rights flag; the file is never fetched from anywhere
 A `<file>.license.json` sidecar (attribution, license, source) is written next to every download.
 """
+import hashlib
 import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
 
 import requests
@@ -17,6 +20,12 @@ import requests
 from .common import HTTP_LOG, Refused, license_ok, load_config, safe_err, status
 
 MAX_BYTES = 80 * 1024 * 1024
+AUDIO_SUFFIXES = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
+AUDIO_CONTENT_TYPES = {
+    "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
+    "application/ogg": ".ogg", "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/x-flac": ".flac",
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
+}
 
 
 def _slug(s):
@@ -25,6 +34,45 @@ def _slug(s):
 
 def _sidecar(path, data):
     Path(str(path) + ".license.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def file_sha256(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def stream_audio(open_response, path, max_bytes, retries=2):
+    """Retry transient failures of the HTTP request or its body, starting from byte zero."""
+    for attempt in range(retries + 1):
+        response = None
+        try:
+            with open_response() as response:
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if content_type.startswith("text/") or "html" in content_type or "json" in content_type:
+                    raise Refused(f"response is not audio: {content_type}")
+                if (response.headers.get("Content-Length") or "").isdigit() and int(response.headers["Content-Length"]) > max_bytes:
+                    raise Refused("file too large")
+                size = 0
+                digest = hashlib.sha256()
+                with path.open("wb") as output:
+                    for chunk in response.iter_content(65536):
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise Refused("file too large")
+                        digest.update(chunk)
+                        output.write(chunk)
+                if not size:
+                    raise Refused("empty audio response")
+                return digest.hexdigest()
+        except requests.RequestException as exc:
+            code = getattr(exc.response, "status_code", 0)
+            transient = code in (408, 500, 502, 503, 504) or isinstance(
+                exc, (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError)
+            )
+            if not transient or attempt == retries or (response is not None and response.headers.get("Retry-After")):
+                raise
+            time.sleep(2 ** attempt)
 
 
 def download(c, dest_dir, cfg=None, http=requests):
@@ -40,38 +88,91 @@ def download(c, dest_dir, cfg=None, http=requests):
         raise Refused(f"license not allowed: {c.license!r}")
     if urlparse(c.url).scheme != "https":
         raise Refused("only https downloads")
-    ext = Path(urlparse(c.url).path).suffix.lower()
-    ext = ext if ext in (".mp3", ".wav", ".ogg", ".m4a", ".flac") else ".mp3"
-    out = dest / f"{_slug(c.artist)} - {_slug(c.title)}{ext}"
-    size = 0
-    with http.get(c.url, stream=True, timeout=30, headers={"User-Agent": "vybex-fetch/1.0"}) as r:
-        HTTP_LOG.append((urlparse(c.url).hostname, r.status_code))
-        r.raise_for_status()
-        with open(out, "wb") as f:
-            for chunk in r.iter_content(65536):
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    f.close()
-                    out.unlink(missing_ok=True)
-                    raise Refused("file too large")
-                f.write(chunk)
-    _sidecar(out, {"attribution": c.attribution(), "license": c.license, "source": c.landing or c.url})
-    return out
+    suffix = ".mp3"
+
+    def open_response():
+        nonlocal suffix
+        host = urlparse(c.url).hostname
+        try:
+            response = http.get(c.url, stream=True, timeout=30, headers={"User-Agent": "vybex-fetch/1.0"})
+        except requests.RequestException as exc:
+            HTTP_LOG.append((host, type(exc).__name__))
+            raise
+        HTTP_LOG.append((host, response.status_code))
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        url_suffix = Path(urlparse(getattr(response, "url", None) or c.url).path).suffix.lower()
+        if url_suffix == ".oga":
+            url_suffix = ".ogg"
+        suffix = AUDIO_CONTENT_TYPES.get(content_type, url_suffix if url_suffix in AUDIO_SUFFIXES else ".mp3")
+        return response
+
+    with TemporaryDirectory(dir=dest) as staging:
+        partial = Path(staging) / "download.part"
+        digest = stream_audio(open_response, partial, MAX_BYTES)
+        staged = partial.rename(Path(staging) / f"{_slug(c.artist)} - {_slug(c.title)}{suffix}")
+        _sidecar(staged, {"attribution": c.attribution(), "license": c.license,
+                          "source": c.landing or c.url, "sha256": digest})
+        return publish_audio(staged, staged, dest)
+
+
+def publish_audio(raw, validated, dest):
+    """Move the usable file and its source metadata out of the staging directory."""
+    dest.mkdir(parents=True, exist_ok=True)
+    final = dest / (raw.stem + validated.suffix)
+    validated.replace(final)
+    side = Path(str(raw) + ".license.json")
+    if side.exists():
+        side.replace(Path(str(final) + ".license.json"))
+    return final
 
 
 def download_first(cands, dest_dir, cfg=None, http=requests):
-    """Fallback chain over candidates: first one that downloads wins. Returns (path|None, statuses)."""
+    """Return the first usable audio file and the outcomes of the candidates tried."""
+    cfg = cfg or load_config()
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
     sts = []
     for c in cands:
         try:
-            p = download(c, dest_dir, cfg, http)
+            if c.source == "local":
+                p = download(c, dest, cfg, http)
+                check_audio(p, min_sec=cfg.get("min_len", 20))
+            else:
+                with TemporaryDirectory(dir=dest) as staging:
+                    raw = download(c, staging, cfg, http)
+                    digest = file_sha256(raw)
+                    checked, _ = check_audio(raw, min_sec=cfg.get("min_len", 20), fixdir=Path(staging) / "fixed")
+                    duplicate = find_duplicate(dest, raw, digest)
+                    if duplicate:
+                        if duplicate.stem != raw.stem:
+                            raise Refused("same audio already saved under another name")
+                        p = duplicate
+                    else:
+                        p = publish_audio(raw, checked, dest)
             sts.append(status(c.source, "ok", c.title))
             return p, sts
-        except Refused as e:
+        except (Refused, BadAudio) as e:
             sts.append(status(c.source, "refused", str(e)))
         except Exception as e:
             sts.append(status(c.source, "unavailable", safe_err(e)))
     return None, sts
+
+
+def find_duplicate(dest, raw, digest):
+    """Find bytes already saved, including the original digest of a repaired download."""
+    size = raw.stat().st_size
+    for path in dest.iterdir():
+        if path.suffix.lower() not in AUDIO_SUFFIXES or not path.is_file():
+            continue
+        side = Path(str(path) + ".license.json")
+        try:
+            if json.loads(side.read_text(encoding="utf-8")).get("sha256") == digest:
+                return path
+        except (OSError, ValueError, AttributeError):
+            pass
+        if path.stat().st_size == size and file_sha256(path) == digest:
+            return path
+    return None
 
 
 def ytdlp_download(url, dest_dir, cfg=None, ydl_cls=None):

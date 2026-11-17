@@ -56,6 +56,7 @@ def test_jamendo_needs_key():
 # ---- download policy
 class FakeResp:
     status_code = 200
+    headers = {}
 
     def __init__(self, data): self.data = data
     def __enter__(self): return self
@@ -77,11 +78,46 @@ def test_download_refuses_disallowed_license_and_http(tmp_path):
         download.download(c, tmp_path, CFG, FakeHttp())
 
 
-def test_download_ok_writes_sidecar_and_chain_skips_bad(tmp_path):
+def test_download_ok_writes_sidecar_and_chain_skips_bad(tmp_path, monkeypatch):
+    monkeypatch.setattr(download, "check_audio", lambda path, **kwargs: (path, []))
     p, st = download.download_first([C("openverse", "by-nc"), C("openverse", "by")], tmp_path, CFG, FakeHttp())
     assert p and p.read_bytes() == b"ID3fake"
     assert json.loads(Path(str(p) + ".license.json").read_text())["license"] == "by"
     assert [s["state"] for s in st] == ["refused", "ok"]
+
+
+def test_download_first_falls_back_after_validation_and_does_not_publish_bad_file(tmp_path, monkeypatch):
+    bad = sources.Candidate("openverse", "Broken", "artist", "https://example.org/broken.mp3", "by")
+    good = sources.Candidate("archive", "Good", "artist", "https://example.org/good.mp3", "cc0")
+
+    def check(path, **kwargs):
+        if path.name == "artist - Broken.mp3":
+            raise download.BadAudio("invalid audio")
+        return path, []
+
+    monkeypatch.setattr(download, "check_audio", check)
+    path, states = download.download_first([bad, good], tmp_path, CFG, FakeHttp())
+    assert path.name == "artist - Good.mp3"
+    assert [s["state"] for s in states] == ["refused", "ok"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name, path.name + ".license.json"]
+    alias = sources.Candidate("archive", "Alias", "artist", good.url, "cc0")
+    duplicate, states = download.download_first([alias], tmp_path, CFG, FakeHttp())
+    assert duplicate is None and "already saved" in states[0]["detail"]
+
+
+@pytest.mark.parametrize("url,final_url,content_type", [
+    ("https://example.org/file.oga", "https://example.org/file.oga", "application/octet-stream"),
+    ("https://example.org/download", "https://cdn.example.org/file.ogg", "application/octet-stream"),
+    ("https://example.org/download", "https://cdn.example.org/file", "application/ogg; charset=binary"),
+])
+def test_download_detects_ogg_extension_after_redirect(tmp_path, url, final_url, content_type):
+    response = FakeResp(b"OggS")
+    response.url = final_url
+    response.headers = {"Content-Type": content_type}
+    candidate = sources.Candidate("openverse", "Song", "Artist", url, "by")
+    http = type("Http", (), {"get": lambda self, *a, **k: response})()
+    path = download.download(candidate, tmp_path, CFG, http)
+    assert path.name == "Artist - Song.ogg" and path.read_bytes() == b"OggS"
 
 
 class FakeYDL:

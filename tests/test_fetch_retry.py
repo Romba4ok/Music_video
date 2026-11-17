@@ -117,7 +117,7 @@ def test_report_counts_and_reasons(tmp_path, capsys):
 def test_a_found_song_moves_from_skipped_to_done_without_a_duplicate_row(tmp_path, capsys, monkeypatch):
     spy = Spy()
     go(args(tmp_path), spy, capsys=capsys)
-    monkeypatch.setattr(fs, "fetch_one", lambda w, cfg, out, searchers=None, dead=None: ("Tasso - Таю.mp3", "openverse: found") if w["title"] == "Таю" else (None, "no licensed match"))
+    monkeypatch.setattr(fs, "fetch_one", lambda w, cfg, out, **kwargs: ("Tasso - Таю.mp3", "openverse: found") if w["title"] == "Таю" else (None, "no licensed match"))
     r = go(args(tmp_path, force_retry=True), spy, capsys=capsys)
     mem = fs.load_memory(tmp_path / "m.md")
     assert r["downloaded"] == ["Tasso - Таю.mp3"] and len(mem["done"]) == 1 and len(mem["skipped"]) == 1

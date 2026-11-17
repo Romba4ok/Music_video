@@ -1,6 +1,8 @@
 import json
 from argparse import Namespace
 
+import requests
+
 from pipeline import fetch_songs, sources
 from pipeline.sources import Candidate
 
@@ -18,6 +20,11 @@ def test_matches_accepts_exact_and_rejects_other_recordings():
     assert not ok(cand(title="Таю - cover"))
     assert not ok(cand(title="Другая песня"))            # wrong title
     assert not ok(cand(artist="Someone Else"))           # wrong artist
+    assert not ok(cand(artist="Someone Else", title="Tasso Таю"))
+    assert not ok(cand(title="Таю навсегда"))
+    assert not sources.matches("LP", "Таю", cand())
+    assert not sources.matches("BUSHIDO ZHO", "Таю", cand(artist="Bushido Flava"))
+    assert sources.matches("Тёмный", "Мой день", cand(artist="ТЕМНЫЙ", title="Мой-день"))
     assert not ok(cand(sec=30), sec=200)                 # a 30 s preview of a 200 s song
     assert ok(cand(sec=190), sec=200)
 
@@ -82,6 +89,71 @@ def test_fetch_one_skips_when_nothing_matches_and_marks_dead_source(tmp_path):
     name, why = fetch_songs.fetch_one({"artist": "Tasso", "title": "Таю", "sec": 0}, cfg, tmp_path,
                                       searchers={"openverse": lambda q, n, c, e: [cand(lic="all-rights-reserved")], "archive": boom}, dead=dead)
     assert name is None and "no licensed match" in why and dead == {"archive"}
+
+
+def test_fetch_one_reaches_next_source_after_full_result_page_and_bad_audio(tmp_path):
+    cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse", "archive"]}}
+    bad = cand()
+    wrong = [cand(title=f"Таю {i}") for i in range(8)]
+    good = cand(source="archive")
+    good.url = "https://archive.org/song.mp3"
+    attempts = []
+
+    def dl(candidate, dest, cfg):
+        attempts.append(candidate.source)
+        path = dest / "raw.mp3"
+        path.write_bytes(candidate.source.encode())
+        return path
+
+    def check(path, **kwargs):
+        if path.read_bytes() == b"openverse":
+            raise fetch_songs.download.BadAudio("broken audio")
+        return path, []
+
+    name, why = fetch_songs.fetch_one(
+        {"artist": "Tasso", "title": "Таю", "sec": 0}, cfg, tmp_path,
+        {"openverse": lambda *a: wrong + [bad], "archive": lambda *a: [good]}, dl, check,
+    )
+    assert attempts == ["openverse", "archive"]
+    assert name == "Tasso - Таю.mp3" and "sha256:" in why
+    assert (tmp_path / name).read_bytes() == b"archive"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [name, name + ".license.json"]
+
+
+def test_fetch_one_skips_audio_with_a_known_digest(tmp_path):
+    cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}
+    raw = mkfile(tmp_path)
+    out = tmp_path / "downloaded"
+    name, why = fetch_songs.fetch_one(
+        {"artist": "Tasso", "title": "Таю", "sec": 0}, cfg, out,
+        {"openverse": lambda *a: [cand()]}, lambda *a: raw,
+        known_sha={fetch_songs.download.file_sha256(raw)[:16]},
+    )
+    assert name is None and "same audio already saved" in why
+    assert list(out.iterdir()) == []
+
+
+def test_fetch_one_leaves_a_rate_limited_download_host_and_tries_another(tmp_path):
+    cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}
+    candidates = [cand(), cand(), cand()]
+    urls = ["https://origin.test/one.mp3", "https://origin.test/two.mp3", "https://other.test/one.mp3"]
+    for candidate, url in zip(candidates, urls):
+        candidate.url = url
+    attempts = []
+
+    def dl(candidate, dest, cfg):
+        attempts.append(candidate.url)
+        if candidate.url == urls[0]:
+            response = requests.Response()
+            response.status_code = 429
+            raise requests.HTTPError(response=response)
+        path = dest / "raw.mp3"
+        path.write_bytes(b"audio")
+        return path
+
+    name, _ = fetch_songs.fetch_one({"artist": "Tasso", "title": "Таю", "sec": 0}, cfg, tmp_path,
+                                   {"openverse": lambda *a: candidates}, dl, lambda path, **kwargs: (path, []))
+    assert name == "Tasso - Таю.mp3" and attempts == [urls[0], urls[2]]
 
 
 def run_args(tmp_path, queue="", **kw):
@@ -166,7 +238,11 @@ def test_prune_lists_misfit_downloads_and_forgets_them(tmp_path):
 
 def test_discover_takes_russian_titled_allowed_license_tracks_only(tmp_path, monkeypatch):
     cfg = {"licenses_allowed": ["cc0", "pdm", "by"], "sources": {"order": ["local", "openverse"]}}
-    monkeypatch.setattr(fetch_songs.download, "download", lambda c, d, cfg=None, http=None: mkfile(tmp_path))
+    def download_track(c, dest, cfg=None):
+        raw = dest / "raw.mp3"
+        raw.write_bytes(c.title.encode("utf-8"))
+        return raw
+    monkeypatch.setattr(fetch_songs.download, "download", download_track)
     monkeypatch.setattr(fetch_songs.download, "check_audio", lambda p, **kw: (p, []))
     pool = [cand(title="Лесная песня", artist="aniarky", sec=281), cand(title="Forest song", artist="aniarky"),      # not Russian
             cand(title="Песня про ТВ", artist="Vint", lic="https://creativecommons.org/licenses/by-sa/4.0/"),         # SA refused

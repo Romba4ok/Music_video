@@ -12,6 +12,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from urllib.parse import urlsplit
+
+import requests
 
 from . import download, official, song_ideas, sources
 from .batch import parse_queue
@@ -126,37 +130,66 @@ def to_mp3(src, dst):
     return dst
 
 
-def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None):
-    """-> (file name | None, reason). Tries every matching candidate until one downloads, passes check_audio and is a full-length track.
-    `dead` (shared set): sources that failed with a network/API error are not asked again in this run (each failure costs ~60 s of retries)."""
+def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, known_sha=()):
+    """Try matching downloadable tracks in source order until one passes validation."""
     dl, check = dl or download.download, check or download.check_audio
     dead = set() if dead is None else dead
-    pre_dead = sorted(dead)  # switched off earlier in this run: they did not answer, so a song skipped now must not look like a definitive "no"
-    cfg = {**cfg, "sources": {**cfg["sources"], "order": [o for o in cfg["sources"]["order"] if o != "local" and o not in dead]}}
-    cands, sts = sources.search(f'{w["artist"]} {w["title"]}', cfg, n=8, searchers=searchers)
-    dead.update(x["source"] for x in sts if x["state"] == "unavailable")
-    good = [c for c in cands if sources.matches(w["artist"], w["title"], c, w["sec"])]
-    for c in good:
-        sources.bump(c.source, matched=1)
-    if not good:
-        return None, f"no licensed match ({len(cands)} found, 0 matching; {', '.join([s['source'] + ':' + s['state'] for s in sts] + [d + ':unavailable' for d in pre_dead])})"
-    Path(out).mkdir(parents=True, exist_ok=True)
-    tmp = Path(out) / "_tmp"
-    for c in good:
-        try:
-            raw = dl(c, tmp, cfg)
-            path, _ = check(raw, min_sec=MIN_SEC, max_sec=MAX_SEC, fixdir=tmp / "fix")
-            name = f'{download._slug(w["artist"])} - {download._slug(w["title"])}.mp3'
-            final = to_mp3(path, Path(out) / name)
-            lic = Path(str(raw) + ".license.json")
-            side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
-            side["source_site"] = c.source
-            (Path(out) / (name + ".license.json")).write_text(json.dumps(side, ensure_ascii=False, indent=1), encoding="utf-8")
-            sources.bump(c.source, downloaded=1)
-            return name, f"{c.source}: {c.attribution()}"
-        except Exception as e:  # this candidate is bad (refused, damaged, preview): try the next one
-            last = f"{c.source}: {type(e).__name__} {str(e)[:100]}"
-    return None, last
+    states = [f"{name}:unavailable" for name in sorted(dead)]
+    order = [name for name in cfg["sources"]["order"] if name != "local" and name not in dead]
+    cfg = {**cfg, "sources": {**cfg["sources"], "order": order}}
+    out = Path(out)
+    seen_urls = set()
+    limited_hosts = set()
+    candidate_count = 0
+    failures = []
+    track = (w["artist"], w["title"])
+    batches = sources.search_batches(" ".join(track), cfg, n=8, searchers=searchers, track=track)
+    for candidates, status in batches:
+        source, state = status["source"], status["state"]
+        states.append(f"{source}:{state}")
+        if state == "unavailable":
+            dead.add(source)
+        candidate_count += len(candidates)
+        for c in candidates:
+            if not sources.matches(w["artist"], w["title"], c, w["sec"]) or c.url in seen_urls:
+                continue
+            host = urlsplit(c.url).hostname
+            if host in limited_hosts:
+                continue
+            seen_urls.add(c.url)
+            sources.bump(c.source, matched=1)
+            try:
+                out.mkdir(parents=True, exist_ok=True)
+                with TemporaryDirectory(dir=out) as staging:
+                    staging = Path(staging)
+                    raw = dl(c, staging, cfg)
+                    digest = download.file_sha256(raw)
+                    if digest in known_sha or digest[:16] in known_sha or download.find_duplicate(out, raw, digest):
+                        raise download.Refused("same audio already saved")
+                    path, _ = check(raw, min_sec=MIN_SEC, max_sec=MAX_SEC, fixdir=staging / "fix")
+                    name = f'{download._slug(w["artist"])} - {download._slug(w["title"])}.mp3'
+                    lic = Path(str(raw) + ".license.json")
+                    side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
+                    side.update(source_site=c.source, sha256=digest)
+                    final = to_mp3(path, staging / name)
+                    download._sidecar(final, side)
+                    download.publish_audio(final, final, out)
+                sources.bump(c.source, downloaded=1)
+                return name, f"{c.source} sha256:{digest[:16]}: {c.attribution()}"
+            except requests.RequestException as exc:
+                code = getattr(exc.response, "status_code", 0)
+                if code == 429:
+                    limited_hosts.add(host)
+                state_name = "refused" if code in (401, 403, 404, 410) else "unavailable"
+                failures.append(f"{source}:{state_name} ({safe_err(exc)})")
+            except (download.Refused, download.BadAudio) as exc:
+                failures.append(f"{source}:refused ({exc})")
+            except (OSError, RuntimeError, ValueError) as exc:
+                failures.append(f"{source}:unavailable ({safe_err(exc)})")
+    details = ", ".join(states + failures[:4])
+    if failures:
+        return None, f"no usable download ({details})"
+    return None, f"no licensed match ({candidate_count} found, 0 matching; {details})"
 
 
 PREVIEW_CLIPS = ("https://itunes.apple.com/search", "https://api.deezer.com/search")
@@ -260,7 +293,7 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
     return got
 
 
-ALGO_VERSION = "2026-11-17.2"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
+ALGO_VERSION = "2026-11-17.5"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
 
 
 def search_signature(cfg, env=None):
@@ -359,10 +392,19 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
                 name, digest, why = fetch_url.fetch(w["url"], w["artist"], w["title"], out, cfg, rights="owner", known_sha=known_sha(state))
             except fetch_url.Duplicate as e:
                 name, why = None, f"дубликат: {e}"
-            except (fetch_url.Refused, RuntimeError, OSError) as e:
+            except fetch_url.DownloadUnavailable as e:
+                name, why = None, f"ссылка: direct-url:unavailable ({e})"
+            except requests.RequestException as e:
+                code = getattr(e.response, "status_code", 0)
+                state_name = "refused" if code in (400, 404, 410) else "unavailable"
+                name, why = None, f"ссылка: direct-url:{state_name} ({safe_err(e)})"
+            except (fetch_url.Refused, download.BadAudio, RuntimeError, OSError, ValueError) as e:
                 name, why = None, f"ссылка: {str(e)[:150]}"
         else:
-            name, why = (None, read_tag(sk["detail"])[3]) if known_none else fetch_one(w, cfg, out, searchers, dead=dead)  # no licensed full file is already known: go straight to the preview
+            if known_none:
+                name, why = None, read_tag(sk["detail"])[3]
+            else:
+                name, why = fetch_one(w, cfg, out, searchers=searchers, dead=dead, known_sha=known_sha(state))
         song = f'{w["artist"]} - {w["title"]}'
         official_note = ""
         if not name and not known_none and not w.get("url") and cfg.get("official", {}).get("enabled", True):  # stage 2: the artist's own pages (docs/rights.md)
