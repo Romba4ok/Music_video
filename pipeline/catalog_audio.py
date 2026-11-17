@@ -225,7 +225,14 @@ class CatalogClient:
                          else parsed.netloc == urlsplit(base).netloc)
             if parsed.scheme != "https" or not origin_ok or parsed.username or parsed.password or parsed.port not in (None, 443):
                 raise Refused("catalog search redirected outside its HTTPS origin")
-            with self.request(url, data=data) as response:
+            try:
+                response = self.request(url, data=data)
+            except requests.HTTPError as exc:
+                # A missing result page is query-specific, not a dead catalog.
+                if site in ("mp3pm", "muzlap") and getattr(exc.response, "status_code", None) == 404:
+                    return []
+                raise
+            with response:
                 if response.is_redirect:
                     url = urljoin(url, response.headers["Location"])
                     if response.status_code in (301, 302, 303):

@@ -97,6 +97,22 @@ def test_muzlap_uses_published_form_and_track_attributes():
     assert track.landing == 'https://muzlap.com/123-xcho-veter.html'
 
 
+def test_missing_mp3pm_result_does_not_disable_later_queries():
+    calls = []
+
+    class HTTP:
+        def post(self, url, **kwargs):
+            return Response(url, 'https://s-query.mp3.pm/')
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, MP3PM, code=404 if len(calls) == 1 else 200)
+
+    client = catalog_audio.CatalogClient(HTTP())
+    assert client.search('mp3pm', 'not in catalog') == []
+    assert client.search('mp3pm', 'Xcho Ветер')[0].artist == 'Xcho'
+
+
 def test_proxy_applies_to_public_post_search(monkeypatch):
     monkeypatch.setenv('AUDIO_PROXY_URL', 'https://user:pass@proxy.example:443')
 
