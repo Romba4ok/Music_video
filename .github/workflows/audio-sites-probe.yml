@@ -1,0 +1,41 @@
+name: audio-sites-probe
+on:
+  push:
+    branches: [codex/audio-sites-probe]
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check runner location and public audio pages
+        shell: bash
+        run: |
+          mkdir -p probe
+          curl --silent --show-error --max-time 15 https://ipinfo.io/json > probe/location.json || true
+          cat probe/location.json
+          printf '\n'
+          i=0
+          while IFS= read -r url; do
+            i=$((i + 1))
+            echo "PROBE $i $url"
+            curl --silent --show-error --location --max-redirs 4 --proto '=https' --proto-redir '=https' \
+              --connect-timeout 8 --max-time 25 --max-filesize 2097152 \
+              --user-agent 'vybex-fetch/1.0' --dump-header "probe/$i.headers" --output "probe/$i.html" \
+              --write-out 'HTTP=%{http_code} FINAL=%{url_effective} REDIRECTS=%{num_redirects} BYTES=%{size_download} TIME=%{time_total}\n' \
+              "$url" > "probe/$i.result" 2> "probe/$i.error" || echo "curl_exit=$?" >> "probe/$i.result"
+            cat "probe/$i.result" "probe/$i.error"
+          done <<'URLS'
+          https://muz-top.me/
+          https://spaces.im/
+          https://mp3.pm/
+          https://muz-top.me/track/211531-enzro-ty-ne-bojsya-nochi-online
+          https://spaces.im/music-online/
+          https://9545933-dua-lipa.mp3.pm/song/77040035-lost-in-your-light-feat-miguel/
+          URLS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audio-sites-probe
+          path: probe/
+          retention-days: 3
