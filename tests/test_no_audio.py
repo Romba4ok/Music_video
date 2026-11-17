@@ -89,4 +89,5 @@ def test_selftest_never_runs_by_itself_and_only_deletes_what_it_created():
     assert list(s[True]) == ["workflow_dispatch"]
     text = (ROOT / ".github" / "workflows" / "selftest.yml").read_text(encoding="utf-8")
     assert "refusing to overwrite" in text and "refusing to mix" in text and "vybex-selftest" in text and "NOT touched" in text
-    assert "rclone delete gd:" not in text and "rclone purge \"gd:ready/$DAY\"" in text   # no bulk delete of user folders
+    assert "rclone delete gd:" not in text and "rclone purge" not in text   # no bulk delete of user folders
+    assert 'grep -F "VYBEX Selftest"' in text and "rclone rmdir" in text   # only files carrying the marker; a folder only when it is empty

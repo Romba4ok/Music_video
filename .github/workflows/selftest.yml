@@ -91,10 +91,16 @@ jobs:
           if rclone lsf gd:state | grep -qx 'selftest.json'; then
             rclone copyto gd:state/selftest.json selftest.json
             DAY=$(python -c "import json;print(json.load(open('selftest.json'))['date'])")
-            if python -c "import json,sys;sys.exit(0 if '$DAY/' in json.load(open('selftest.json'))['ready_before'] else 1)"; then echo "gd:ready/$DAY existed before the test: NOT touched"
-            elif rclone lsf gd:ready | grep -qx "$DAY/"; then rclone purge "gd:ready/$DAY" && echo "deleted gd:ready/$DAY (created by the test)"; fi
             rclone deletefile gd:state/selftest.json
           fi
+          for DAY in $(rclone lsf gd:ready | tr -d /); do
+            rclone lsf "gd:ready/$DAY" | grep -F "VYBEX Selftest" | while read -r f; do rclone deletefile "gd:ready/$DAY/$f" && echo "deleted gd:ready/$DAY/$f"; done
+            if rclone lsf "gd:ready/$DAY" | grep -qx 'report.json'; then
+              rclone copyto "gd:ready/$DAY/report.json" r.json
+              if grep -qF "VYBEX Selftest" r.json; then rclone deletefile "gd:ready/$DAY/report.json" && echo "deleted gd:ready/$DAY/report.json (report of the test run)"; fi
+            fi
+            if [ -z "$(rclone lsf "gd:ready/$DAY")" ]; then rclone rmdir "gd:ready/$DAY" && echo "removed empty gd:ready/$DAY"; else echo "gd:ready/$DAY still holds: $(rclone lsf "gd:ready/$DAY" | xargs) (not test files, NOT touched)"; fi
+          done
           if rclone lsf gd:state | grep -qx 'songs.md'; then
             rclone copyto gd:state/songs.md out-songs.md
             python - <<'PY'
