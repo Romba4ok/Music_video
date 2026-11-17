@@ -27,6 +27,86 @@ SEFON = """<div class="mp3" data-mp3_id="123"><span class="url_protected" data-u
 <div class="song_name"><a href="/mp3/123-veter/">Ветер</a></div><span>02:17</span>
 <div class="download"><a href="#protected">Скачать</a></div></div>"""
 
+MP3PM = """<ul><li class="cplayer-sound-item" data-sound-url="https://cs1.mp3.pm/listen/1/clip.mp3"
+data-download-url="https://cs1.mp3.pm/download/1/full.mp3">
+<h4><i class="cplayer-data-sound-author">Xcho</i>
+<a href="https://42-xcho.mp3.pm/song/1-veter/"><b class="cplayer-data-sound-title">Ветер</b></a></h4>
+<em class="cplayer-data-sound-time">02:17</em></li></ul>"""
+
+
+def test_mp3pm_reads_explicit_download_metadata_and_excludes_listen_only():
+    track, = catalog_audio.parse_tracks(MP3PM, "mp3pm", "https://mp3.pm/")
+    assert (track.artist, track.title, track.sec) == ("Xcho", "Ветер", 137)
+    assert track.url == "https://cs1.mp3.pm/download/1/full.mp3"
+    assert track.landing == "https://42-xcho.mp3.pm/song/1-veter/"
+    listen_only = MP3PM.replace('data-download-url="https://cs1.mp3.pm/download/1/full.mp3"', '')
+    assert catalog_audio.parse_tracks(listen_only, "mp3pm", "https://mp3.pm/")[0].url == ""
+
+
+def test_mp3pm_search_follows_published_redirect_to_search_subdomain():
+    calls = []
+
+    class HTTP:
+        def post(self, url, **kwargs):
+            calls.append(url)
+            assert kwargs['data'] == {'q': 'Xcho Ветер'}
+            return Response(url, '"https://s-query.mp3.pm/"')
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, MP3PM)
+
+    tracks = catalog_audio.CatalogClient(HTTP()).search("mp3pm", "Xcho Ветер")
+    assert len(tracks) == 1 and calls[0] == "https://mp3.pm/public/api.search.php"
+    assert calls[1] == "https://s-query.mp3.pm/"
+
+
+@pytest.mark.parametrize("target", ["https://mp3.pm.evil.test/", "https://evilmp3.pm/",
+                                    "http://s-query.mp3.pm/", "https://user:pass@s-query.mp3.pm/",
+                                    "https://s-query.mp3.pm:8443/"])
+def test_mp3pm_search_refuses_redirect_outside_https_catalog(target):
+    calls = []
+
+    class HTTP:
+        def post(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, target)
+
+    with pytest.raises(common.Refused):
+        catalog_audio.CatalogClient(HTTP()).search("mp3pm", "Xcho Ветер")
+    assert len(calls) == 1
+
+
+MUZLAP = """<div class="short js-item" data-track="/uploads/music/full.mp3" data-title="Ветер" data-artist="Xcho">
+<a href="/123-xcho-veter.html"><div class="short-title">Ветер</div></a><div class="short-time">2:17</div></div>"""
+
+
+def test_muzlap_uses_published_form_and_track_attributes():
+    calls = []
+
+    class HTTP:
+        def post(self, url, **kwargs):
+            calls.append(url)
+            assert kwargs['data'] == {'do': 'search', 'subaction': 'search', 'story': 'Xcho Ветер'}
+            return Response(url, MUZLAP)
+
+    track, = catalog_audio.CatalogClient(HTTP()).search('muzlap', 'Xcho Ветер')
+    assert calls == ['https://muzlap.com/']
+    assert (track.artist, track.title, track.sec) == ('Xcho', 'Ветер', 137)
+    assert track.url == 'https://muzlap.com/uploads/music/full.mp3'
+    assert track.landing == 'https://muzlap.com/123-xcho-veter.html'
+
+
+def test_proxy_applies_to_public_post_search(monkeypatch):
+    monkeypatch.setenv('AUDIO_PROXY_URL', 'https://user:pass@proxy.example:443')
+
+    class HTTP:
+        def post(self, url, **kwargs):
+            assert kwargs['proxies'] == {scheme: 'https://user:pass@proxy.example:443' for scheme in ('http', 'https')}
+            return Response(url, MUZLAP)
+
+    assert catalog_audio.CatalogClient(HTTP()).search('muzlap', 'Xcho Ветер')
+
 
 class Response:
     def __init__(self, url, text="", code=200, headers=None):

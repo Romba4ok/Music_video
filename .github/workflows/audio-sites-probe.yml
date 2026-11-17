@@ -1,0 +1,214 @@
+name: audio-sites-probe
+on:
+  push:
+    branches: [codex/audio-sites-probe]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    concurrency:
+      group: vybex-drive
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check runner location and public audio pages
+        shell: bash
+        run: |
+          mkdir -p probe
+          curl --silent --show-error --max-time 15 https://ipinfo.io/json > probe/location.json || true
+          cat probe/location.json
+          printf '\n'
+          i=0
+          while IFS= read -r url; do
+            i=$((i + 1))
+            echo "PROBE $i $url"
+            curl --silent --show-error --location --max-redirs 4 --proto '=https' --proto-redir '=https' \
+              --connect-timeout 8 --max-time 25 --max-filesize 2097152 \
+              --user-agent 'vybex-fetch/1.0' --dump-header "probe/$i.headers" --output "probe/$i.html" \
+              --write-out 'HTTP=%{http_code} FINAL=%{url_effective} REDIRECTS=%{num_redirects} BYTES=%{size_download} TIME=%{time_total}\n' \
+              "$url" > "probe/$i.result" 2> "probe/$i.error" || echo "curl_exit=$?" >> "probe/$i.result"
+            cat "probe/$i.result" "probe/$i.error"
+          done <<'URLS'
+          https://muz-top.me/
+          https://spaces.im/
+          https://mp3.pm/
+          https://muz-top.me/track/211531-enzro-ty-ne-bojsya-nochi-online
+          https://spaces.im/music-online/
+          https://9545933-dua-lipa.mp3.pm/song/77040035-lost-in-your-light-feat-miguel/
+          https://s-xcho.mp3.pm/
+          https://mp3.pm/?a=redirect&q=Xcho
+          https://hitparad.fm/
+          https://muzlap.com/
+          URLS
+          curl --silent --show-error --max-time 20 --max-filesize 2097152 \
+            https://mp3.pm/i/js/_main_min.591308b4.js > probe/mp3pm.js || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio-http-probe
+          path: probe/
+          retention-days: 3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install downloader and validation tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg rclone
+          pip install requests pytest
+      - name: Downloader tests
+        run: python -m pytest tests/test_catalog_audio.py tests/test_fetch_songs.py tests/test_fetch_url.py -q
+      - name: Check the real AAC response advertised as MP3
+        continue-on-error: true
+        run: |
+          mkdir -p out
+          python -m pipeline.catalog_audio --artist 'Ken Dala' --title 'Без тебя' --sites mp3pm \
+            --download-only --out out/aac-probe --state out/aac-probe-memory.md --max 1 > out/aac-probe.json
+          ffprobe -v error -show_entries format=format_name,duration,size -of json out/aac-probe/*.mp3
+      - name: Read existing Drive queue and memory
+        env:
+          RCLONE_CONFIG_GD_TYPE: drive
+          RCLONE_CONFIG_GD_SCOPE: drive
+          RCLONE_CONFIG_GD_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          RCLONE_CONFIG_GD_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        shell: bash
+        run: |
+          echo "::add-mask::$RT"
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json, os
+          for name in ('RCLONE_CONFIG_GD_TYPE', 'RCLONE_CONFIG_GD_SCOPE', 'RCLONE_CONFIG_GD_CLIENT_ID', 'RCLONE_CONFIG_GD_CLIENT_SECRET', 'RCLONE_CONFIG_GD_ROOT_FOLDER_ID'):
+              value = os.environ[name]
+              if not value or '\n' in value or '\r' in value:
+                  raise SystemExit('Missing or invalid Drive configuration')
+              print(name + '=' + value)
+          if not os.environ['RT']:
+              raise SystemExit('GDRIVE_REFRESH_TOKEN is missing')
+          print('RCLONE_CONFIG_GD_TOKEN=' + json.dumps({'access_token': '', 'token_type': 'Bearer', 'refresh_token': os.environ['RT'], 'expiry': '2000-01-01T00:00:00Z'}))
+          PY
+      - name: Search the existing list and download with fallback
+        shell: bash
+        run: |
+          mkdir -p out accounts/main/audio
+          rclone lsf gd: > out/drive-root.txt
+          if grep -qx 'state/' out/drive-root.txt; then
+            rclone lsf gd:state > out/drive-state.txt
+          else
+            : > out/drive-state.txt
+          fi
+          if grep -qx 'songs.md' out/drive-state.txt; then
+            rclone copyto gd:state/songs.md out/songs-memory.md
+          else
+            cp accounts/main/songs-memory.md out/songs-memory.md
+          fi
+          if grep -qx 'queue.txt' out/drive-root.txt; then
+            rclone copyto gd:queue.txt out/probe-queue.md
+          else
+            cp accounts/main/queue.md out/probe-queue.md
+          fi
+          : > out/have.txt
+          : > out/current-audio.txt
+          for folder in audio done; do
+            if grep -qx "$folder/" out/drive-root.txt; then
+              rclone lsf "gd:$folder" --files-only >> out/have.txt
+              if [ "$folder" = audio ]; then
+                rclone lsf gd:audio --files-only > out/current-audio.txt
+              fi
+            fi
+          done
+          HAVE=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac)$' out/current-audio.txt || true)
+          NEED=$((3 - HAVE)); [ "$NEED" -lt 0 ] && NEED=0
+          echo "Drive/audio has $HAVE audio files; download up to $NEED to reach three."
+          python -m pipeline songs --download-only --force-retry --queue out/probe-queue.md \
+            --out accounts/main/audio --have-file out/have.txt --state out/songs-memory.md \
+            --max "$NEED" --tries 40 | tee out/songs.json
+      - name: Verify saved audio and repeat without downloading duplicates
+        shell: bash
+        run: |
+          python - <<'PY'
+          import contextlib, io, json, shutil
+          from argparse import Namespace
+          from pathlib import Path
+          from pipeline import batch, download, fetch_songs, fetch_url
+          from pipeline.common import HTTP_LOG
+          report = json.loads(Path('out/songs.json').read_text().splitlines()[-1])
+          verified = []
+          for row in report['songs']:
+              if row['result'] != 'downloaded':
+                  continue
+              path = Path('accounts/main/audio') / row['file']
+              result = fetch_url.inspect_audio(path, min_sec=90)
+              result['discovered_by_next_stage'] = any(e['audio_file'] == path.name for e in batch.queue_from_audio(path.parent, []))
+              assert result['discovered_by_next_stage'], 'Next stage cannot discover audio'
+              verified.append(result)
+          Path('out/verified.json').write_text(json.dumps(verified, ensure_ascii=False, indent=2))
+          if not verified:
+              have = Path('out/current-audio.txt').read_text().splitlines()
+              if sum(Path(n).suffix.lower() in ('.mp3', '.wav', '.m4a', '.ogg', '.flac') for n in have) >= 3:
+                  print('At least three files already exist in Drive/audio; no duplicate download needed.')
+                  raise SystemExit(0)
+              raise SystemExit('No matching audio downloaded; inspect source responses')
+          before = {p.name: (p.stat().st_mtime_ns, download.file_sha256(p)) for p in Path('accounts/main/audio').glob('*.mp3')}
+          Path('out/repeat-queue.md').write_text('\n'.join(f"{fetch_songs.parse_name(p.stem)[0]} | {fetch_songs.parse_name(p.stem)[1]}" for p in Path('accounts/main/audio').glob('*.mp3')))
+          shutil.copyfile('out/songs-memory.md', 'out/repeat-memory.md')
+          args = Namespace(download_only=True, out='accounts/main/audio', state='out/repeat-memory.md',
+                           queue='out/repeat-queue.md', have_file=None, record_used=None, prune=None,
+                           force_retry=True, previews=False, discover=False, max=1, tries=12)
+          HTTP_LOG.clear()
+          with contextlib.redirect_stdout(io.StringIO()):
+              assert fetch_songs.run(args, fetch_chart=lambda cfg: [], sleep=lambda seconds: None) == []
+          after = {p.name: (p.stat().st_mtime_ns, download.file_sha256(p)) for p in Path('accounts/main/audio').glob('*.mp3')}
+          assert before == after and not HTTP_LOG, 'Repeated run changed files or performed HTTP requests'
+          print(json.dumps({'verified': verified, 'repeat': 'no downloads, no HTTP requests, same files'}, ensure_ascii=False))
+          PY
+      - name: Upload verified audio and confirm Drive checksum
+        shell: bash
+        run: |
+          if compgen -G 'accounts/main/audio/*.mp3' > /dev/null; then
+            rclone copy accounts/main/audio gd:audio --immutable
+            rclone check accounts/main/audio gd:audio --one-way
+            echo 'New audio uploaded and one-way checksum verification passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Existing Drive/audio files preserved; no duplicate downloads or uploads.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rclone mkdir gd:state
+          rclone copyto out/songs-memory.md gd:state/songs.md
+          rclone lsjson gd:audio --files-only --hash > out/drive-audio.json
+          cat out/verified.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Read Drive files back and verify formats
+        shell: bash
+        run: |
+          rclone copy gd:audio out/drive-verification --include '*.mp3' --include '*.mp3.license.json'
+          rclone check out/drive-verification gd:audio --one-way
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          from pipeline import fetch_url
+          rows = []
+          for path in sorted(Path('out/drive-verification').glob('*.mp3')):
+              row = fetch_url.inspect_audio(path, min_sec=90)
+              probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries',
+                  'format=duration:stream=codec_name,sample_rate,channels', '-of', 'json', str(path)], text=True))
+              side = Path(str(path) + '.license.json')
+              row.update(name=path.name, ffprobe=probe, source_site=json.loads(side.read_text()).get('source_site') if side.exists() else 'existing')
+              rows.append(row)
+          assert len(rows) >= 3, 'Fewer than three verified audio files in Drive/audio'
+          Path('out/drive-verified.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2))
+          print(json.dumps(rows, ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audio-sites-probe
+          path: |
+            probe/
+            out/songs.json
+            out/verified.json
+            out/drive-audio.json
+            out/have.txt
+            out/aac-probe.json
+            out/drive-verified.json
+          retention-days: 3
