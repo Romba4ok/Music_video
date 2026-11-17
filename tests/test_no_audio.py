@@ -75,3 +75,18 @@ def test_the_song_search_has_its_own_daily_schedule_and_generate_never_publishes
     f = load("fetch-songs.yml")
     assert f[True]["schedule"][0]["cron"] == "0 1 * * *" and "workflow_call" in f[True] and "workflow_dispatch" in f[True]
     assert CFG.get("buffer", {}).get("silent", "hold") == "hold"       # a silent video is held, not sent (see tests/test_buffer.py)
+
+
+def test_drive_writers_share_one_queue_and_two_generate_runs_cannot_overlap():
+    g, f, s = load("generate.yml"), load("fetch-songs.yml"), load("selftest.yml")
+    assert g["concurrency"] == {"group": "generate", "cancel-in-progress": False}      # a second dispatch waits for the first, then finds Drive/audio emptied
+    for conc in (g["jobs"]["generate"]["concurrency"], f["jobs"]["fetch"]["concurrency"], s["concurrency"]):
+        assert conc == {"group": "vybex-drive", "cancel-in-progress": False}           # search / generate / selftest never write Drive/audio + state together
+
+
+def test_selftest_never_runs_by_itself_and_only_deletes_what_it_created():
+    s = load("selftest.yml")
+    assert list(s[True]) == ["workflow_dispatch"]
+    text = (ROOT / ".github" / "workflows" / "selftest.yml").read_text(encoding="utf-8")
+    assert "refusing to overwrite" in text and "refusing to mix" in text and "vybex-selftest" in text and "NOT touched" in text
+    assert "rclone delete gd:" not in text and "rclone purge \"gd:ready/$DAY\"" in text   # no bulk delete of user folders

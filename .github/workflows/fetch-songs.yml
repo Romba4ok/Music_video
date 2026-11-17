@@ -34,6 +34,9 @@ env:
   RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
 jobs:
   fetch:
+    concurrency:   # one writer of Drive/audio and Drive/state at a time (search, generate, selftest share this queue): no lost updates, no double download
+      group: vybex-drive
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -77,6 +77,9 @@ jobs:
   generate:
     needs: check
     if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.audio != '0' }}
+    concurrency:   # shares the queue with fetch-songs / selftest: they never write Drive/audio and Drive/state at the same time
+      group: vybex-drive
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
