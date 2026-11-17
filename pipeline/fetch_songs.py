@@ -326,7 +326,9 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     sig = search_signature(cfg)
     cands = wanted(cfg, qtext, fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
-    octx = official.Ctx()  # MusicBrainz / page answers are shared by all songs of this run
+    octx = official.Ctx(cache_file=state_f.with_name("musicbrainz-cache.json"))  # MusicBrainz / page answers are shared by all songs of this run
+    if cfg.get("official", {}).get("enabled", True) and not octx.contact:
+        print("songs: MUSICBRAINZ_CONTACT не настроен: MusicBrainz получит User-Agent 'VYBEX/1.0' без контакта (задайте переменную репозитория с вашим адресом или URL проекта)", file=sys.stderr)
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
     for w in cands:
@@ -390,11 +392,12 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             got.append(name)
     shutil.rmtree(out / "_tmp", ignore_errors=True)
     save_memory(state_f, state)
+    octx.save()
     if links:
         official.save_links(state_f.with_name("song-links.md"), links, today)
     report = {"songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
-              "skip_reasons": skip_kinds, "source_states": src_states, "http": http_summary(), "signature": sig, "force_retry": bool(a.force_retry)}
+              "skip_reasons": skip_kinds, "source_states": src_states, "http": http_summary(), "musicbrainz_contact": bool(octx.contact), "signature": sig, "force_retry": bool(a.force_retry)}
     print(json.dumps(report, ensure_ascii=False))
     return got
 

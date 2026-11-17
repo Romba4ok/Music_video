@@ -125,44 +125,111 @@ def test_unknown_song_and_artist_give_a_reason_and_a_dead_musicbrainz_is_marked_
     assert "musicbrainz:unavailable" in r   # the memory re-checks such a song on the next run, not in 14 days
 
 
-def test_musicbrainz_requests_are_spaced_backed_off_on_503_and_switched_off_after_two_failures():
+class Err(requests.HTTPError):
+    def __init__(self, code, retry_after=None):
+        super().__init__(str(code))
+        self.response = Resp(code)
+        if retry_after is not None:
+            self.response.headers["Retry-After"] = str(retry_after)
+
+
+def clock_sleep():
     waits, now = [], [0.0]
-    ctx = official.Ctx(gap=1.1, clock=lambda: now[0])
     def sleep(s):
-        waits.append(round(s, 1))
+        waits.append(round(s, 2))
         now[0] += s
+    return waits, (lambda: now[0]), sleep
+
+
+def test_user_agent_comes_from_musicbrainz_contact_and_is_never_invented():
+    assert official.Ctx(env={"MUSICBRAINZ_CONTACT": "https://example.org/vybex"}).ua == {"User-Agent": "VYBEX/1.0 (https://example.org/vybex)"}
+    assert official.Ctx(env={}).ua == {"User-Agent": "VYBEX/1.0"} and official.Ctx(env={"MUSICBRAINZ_CONTACT": "  "}).contact == ""
+    seen = {}
+    ctx = official.Ctx(env={"MUSICBRAINZ_CONTACT": "mail@example.org"})
+    ctx.mb("artist/", {"q": 1}, lambda url, params=None, headers=None, **k: seen.update(h=headers, r=k.get("retries")) or {"ok": 1}, NOSLEEP)
+    assert seen == {"h": {"User-Agent": "VYBEX/1.0 (mail@example.org)"}, "r": 0}   # one User-Agent for every MusicBrainz call, no hidden instant retries
+
+
+def test_requests_are_spaced_by_at_least_the_gap_with_a_margin():
+    waits, clock, sleep = clock_sleep()
+    ctx = official.Ctx(clock=clock, env={})
+    for q in range(3):
+        ctx.mb("artist/", {"q": q}, lambda *a, **k: {"ok": 1}, sleep)
+    assert waits[0] == 0 and waits[1:] == [1.5, 1.5]   # more than the 1 request/second MusicBrainz allows
+
+
+def test_503_without_retry_after_backs_off_3_6_12_and_the_spacing_grows_then_shrinks_again():
+    waits, clock, sleep = clock_sleep()
+    ctx = official.Ctx(clock=clock, env={})
     seq = iter([503, 503, 200])
-    def gj(url, params=None, headers=None, retries=None, **k):
-        assert retries == 0                                      # no hidden instant retries: the back-off here is the only retry
-        code = next(seq)
-        if code == 503:
-            e = requests.HTTPError("503")
-            e.response = Resp(503)
-            raise e
+    def gj(*a, **k):
+        c = next(seq)
+        if c == 503:
+            raise Err(503)
         return {"ok": 1}
     assert ctx.mb("artist/", {"q": 1}, gj, sleep) == {"ok": 1}
-    assert waits[0] == 0 and 4.5 <= waits[1] <= 4.8 and 10.3 <= waits[2] <= 10.6 and ctx.gap > 2.4   # spacing grows after each 503: 1.1 -> 1.65 -> 2.5 s (capped at 3)
-    #                        # 1st immediately (first call), then 1.1+3, then 1.1+8 after the 503s
-    assert ctx.mb("artist/", {"q": 1}, gj, sleep) == {"ok": 1} and len(waits) == 3   # the same question is answered from the cache
+    assert waits[0] == 0 and 5.2 <= waits[1] <= 5.3 and 9.3 <= waits[2] <= 9.5   # 2.25 + 3, then 3.4 + 6 (the spacing is widened after every 503)
+    assert 1.5 <= ctx.gap < 3.4   # and it shrinks again after the success
+
+
+def test_retry_after_from_the_server_is_obeyed():
+    waits, clock, sleep = clock_sleep()
+    ctx = official.Ctx(clock=clock, env={})
+    seq = iter([Err(503, retry_after=17), None])
+    def gj(*a, **k):
+        e = next(seq)
+        if e:
+            raise e
+        return {"ok": 1}
+    ctx.mb("artist/", {"q": 1}, gj, sleep)
+    assert waits[1] >= 17 and waits[1] < 20
+    assert official._retry_after(Err(503, retry_after=9999).response) == 120      # capped
+    assert official._retry_after(Err(503).response) == 0
+
+
+def test_a_failed_request_never_switches_musicbrainz_off_the_next_one_is_tried_after_a_longer_pause():
+    waits, clock, sleep = clock_sleep()
+    ctx = official.Ctx(clock=clock, env={})
     def dead(*a, **k):
-        e = requests.HTTPError("503")
-        e.response = Resp(503)
-        raise e
-    for q in (2, 3):
+        raise Err(503)
+    for q in (1, 2):
         try:
             ctx.mb("artist/", {"q": q}, dead, sleep)
         except requests.HTTPError:
             pass
-    before = len(waits)
-    try:
-        ctx.mb("artist/", {"q": 4}, dead, sleep)
-    except ConnectionError as e:
-        assert "выключен" in str(e)
-    assert len(waits) == before                                  # switched off: not a single further request
+    n = len(waits)
+    assert ctx.mb("artist/", {"q": 3}, lambda *a, **k: {"ok": 1}, sleep) == {"ok": 1}   # the server recovered: answered, not "off for the rest of the run"
+    assert waits[n] >= 60 and ctx.fails == 0                                          # after two failures the pause before the next request was 60 s
+
+
+def test_waiting_budget_is_bounded_and_the_song_is_marked_unavailable_for_the_next_run():
+    ctx = official.Ctx(env={}, budget=5)
+    def dead(*a, **k):
+        raise Err(503)
+    r = official.try_song(W, CFG, "out", get_json=dead, sleep=NOSLEEP, ctx=ctx)
+    assert "musicbrainz:unavailable" in r["reason"] and ctx.budget < 5
+
+
+def test_answers_are_cached_on_disk_so_the_next_run_asks_nothing_for_known_releases(tmp_path):
+    f = tmp_path / "musicbrainz-cache.json"
+    mb1 = MB([("official homepage", "https://t.example/")])
+    official.try_song(W, CFG, "out", http=Http({"https://t.example/": (200, HOME)}), get_json=mb1, fetch=FETCH_OK, sleep=NOSLEEP, ctx=(c1 := official.Ctx(env={}, cache_file=f)))
+    c1.save()
+    assert mb1.calls and f.exists()
+    mb2 = MB([("official homepage", "https://t.example/")])
+    official.try_song(W, CFG, "out", http=Http({"https://t.example/": (200, HOME)}), get_json=mb2, fetch=FETCH_OK, sleep=NOSLEEP, ctx=official.Ctx(env={}, cache_file=f))
+    assert mb2.calls == []                                            # same recording / artist: no request at all
+    old = json.loads(f.read_text(encoding="utf-8"))
+    for v in old.values():
+        v["t"] = 1.0                                                  # older than the 30-day TTL
+    f.write_text(json.dumps(old), encoding="utf-8")
+    mb3 = MB([("official homepage", "https://t.example/")])
+    official.try_song(W, CFG, "out", http=Http({"https://t.example/": (200, HOME)}), get_json=mb3, fetch=FETCH_OK, sleep=NOSLEEP, ctx=official.Ctx(env={}, cache_file=f))
+    assert mb3.calls
 
 
 def test_two_songs_of_one_artist_cost_one_musicbrainz_artist_lookup_and_one_page_fetch():
-    mb, ctx = MB([("official homepage", "https://t.example/")]), official.Ctx()
+    mb, ctx = MB([("official homepage", "https://t.example/")]), official.Ctx(env={})
     pages = {"https://t.example/": (200, HOME)}
     http = Http(pages)
     for title in ("Таю", "Другая"):

@@ -4,8 +4,11 @@ Anything else is never downloaded: a page without a license, or a file without a
 Not touched: streaming/store/social hosts (LINK_ONLY), pages that robots.txt closes, logins, paywalls, DRM. No API key, plain HTTP.
 """
 import json
+import os
 import re
 import time
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 import urllib.robotparser
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
@@ -89,35 +92,80 @@ def robots_ok(url, http, timeout, cache):
     return cache[base].can_fetch(UA["User-Agent"], url)
 
 
-class Ctx:
-    """Per-run state shared by all songs: MusicBrainz answers and scanned pages are fetched ONCE (several songs of one artist cost one request),
-    requests to MusicBrainz are spaced `gap` seconds apart and retried with a back-off on 429/503, and after two failed requests in a row MusicBrainz is
-    switched off for the rest of the run (the songs are then marked `musicbrainz:unavailable` and searched again next time)."""
+def _retry_after(resp):
+    """Retry-After header (seconds or an HTTP date) -> seconds, 0 when absent / unreadable; at most 120."""
+    v = (getattr(resp, "headers", None) or {}).get("Retry-After")
+    if not v:
+        return 0.0
+    try:
+        return min(120.0, max(0.0, float(v)))
+    except ValueError:
+        try:
+            return min(120.0, max(0.0, parsedate_to_datetime(v).timestamp() - time.time()))
+        except (TypeError, ValueError):
+            return 0.0
 
-    def __init__(self, gap=1.1, clock=time.monotonic):
-        self.cache, self.pages, self.robots, self.last, self.fails, self.gap, self.clock = {}, {}, {}, -1e9, 0, gap, clock
+
+class Ctx:
+    """State shared by all songs of a run.
+    MusicBrainz client: User-Agent `VYBEX/1.0 (<MUSICBRAINZ_CONTACT>)` (no contact configured = plain `VYBEX/1.0`, nothing is invented); requests at least `gap`
+    seconds apart (1.5 s, wider after each 429/503, narrower again after successes); a 429/503/timeout is retried up to 3 times, waiting Retry-After when the
+    server sends it, otherwise 3 / 6 / 12 s; a request that failed completely adds an extra pause before the next one. All waiting beyond the normal spacing is
+    bounded by `budget` seconds per run: when it is used up the rest of the songs get `musicbrainz:unavailable` and are searched again next run. Nothing is
+    switched off for good. Successful answers (also empty ones) are cached in memory and, with `cache_file`, on disk for `ttl_days`, so the same recording /
+    release / label / artist is never asked twice. Scanned pages are fetched once per run."""
+
+    def __init__(self, gap=1.5, clock=time.monotonic, env=None, cache_file=None, budget=600, ttl_days=30):
+        env = os.environ if env is None else env
+        self.contact = (env.get("MUSICBRAINZ_CONTACT") or "").strip()
+        self.ua = {"User-Agent": f"VYBEX/1.0 ({self.contact})" if self.contact else "VYBEX/1.0"}
+        self.base_gap = self.gap = gap
+        self.clock, self.budget, self.ttl = clock, budget, ttl_days * 86400
+        self.last, self.fails, self.pause = -1e9, 0, 0.0
+        self.pages, self.robots, self.cache_file, self.fresh = {}, {}, cache_file, {}
+        self.cache = {}
+        try:
+            for k, v in json.loads(Path(cache_file).read_text(encoding="utf-8")).items():
+                if time.time() - v["t"] < self.ttl:
+                    self.cache[k] = v
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # no cache yet / unreadable: asked again
+
+    def save(self, keep=3000):
+        if not self.cache_file or not self.fresh:
+            return
+        merged = dict(sorted({**self.cache, **self.fresh}.items(), key=lambda kv: kv[1]["t"])[-keep:])
+        Path(self.cache_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.cache_file).write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
 
     def mb(self, path, params, get_json, sleep):
-        k = (path, json.dumps(params, sort_keys=True))
+        k = path + "?" + json.dumps(params, sort_keys=True, ensure_ascii=False)
         if k in self.cache:
-            return self.cache[k]
-        if self.fails >= 2:
-            raise ConnectionError("MusicBrainz выключен до конца запуска: 2 запроса подряд не прошли")
-        err = None
-        for wait in (0, 3, 8):  # a 429/503 is the rate limit: wait longer each time instead of hammering
-            sleep(max(0.0, self.gap - (self.clock() - self.last)) + wait)
-            self.last = self.clock()
+            return self.cache[k]["v"]
+        err, ra = None, 0.0
+        for attempt in range(4):
+            back = self.pause if attempt == 0 else (ra or 3.0 * 2 ** (attempt - 1))
+            back = min(back, 120.0)
+            if back > self.budget:
+                raise ConnectionError("MusicBrainz: лимит ожидания запуска исчерпан, песня перепроверится в следующий запуск") from err
+            self.budget -= back
+            sleep(max(0.0, self.gap - (self.clock() - self.last)) + back)
+            self.last, self.pause = self.clock(), 0.0
             try:
-                r = get_json(MB + path, {**params, "fmt": "json"}, headers=UA, retries=0)
-                self.fails, self.cache[k] = 0, r
+                r = get_json(MB + path, {**params, "fmt": "json"}, headers=self.ua, retries=0)
+                self.fails, self.gap = 0, max(self.base_gap, self.gap * 0.9)
+                self.cache[k] = self.fresh[k] = {"t": time.time(), "v": r}
                 return r
             except Exception as e:
                 err = e
-                code = getattr(getattr(e, "response", None), "status_code", 0)
+                resp = getattr(e, "response", None)
+                code = getattr(resp, "status_code", 0)
                 if code and code not in (429, 503):  # 404 and the like: asking again cannot help
                     raise
-                self.gap = min(self.gap * 1.5, 3.0)  # the server said "too fast": every later request of this run is spaced wider
+                ra = _retry_after(resp)
+                self.gap = min(self.gap * 1.5, 4.0)
         self.fails += 1
+        self.pause = min(30.0 * self.fails, 120.0)  # the server is not answering: the next request starts after a longer pause
         raise err
 
 
@@ -261,7 +309,6 @@ def try_song(w, cfg, out, known_sha=(), http=requests, get_json=None, fetch=None
 
 def save_links(path, rows, today):
     """rows (song, page, note) -> md table `song-links.md` next to the memory; one row per (song, page), the first date is kept."""
-    from pathlib import Path
     path = Path(path)
     old = {}
     if path.exists():
