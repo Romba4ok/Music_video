@@ -65,7 +65,11 @@ def _jamendo(q, n, cfg, env):
     if not key:
         raise NeedsAuth("set JAMENDO_CLIENT_ID (free key at developer.jamendo.com)")
     data = get_json("https://api.jamendo.com/v3.0/tracks/",
-                    {"client_id": key, "format": "json", "limit": n, "search": q, "audiodlformat": "mp32"})
+                    {"client_id": key, "format": "json", "limit": max(n, 20), "search": q, "audiodlformat": "mp32"})  # many tracks forbid download: ask for more, filter below
+    head = data.get("headers") or {}
+    if head.get("status") not in (None, "success"):  # an API-level failure (bad client id, rate limit) is not an empty answer
+        print("jamendo:", head.get("status"), head.get("code"), str(head.get("error_message"))[:100].replace(key, "***"), file=__import__("sys").stderr)
+        raise RuntimeError("Jamendo API: " + str(head.get("error_message") or head.get("status"))[:80])
     return [
         Candidate("jamendo", r.get("name") or "", r.get("artist_name") or "", r.get("audiodownload") or "",
                   r.get("license_ccurl") or "", r.get("license_ccurl") or "", r.get("shareurl") or "", sec=r.get("duration") or 0)

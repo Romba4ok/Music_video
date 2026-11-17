@@ -98,3 +98,14 @@ def test_probe_asks_every_source_without_early_stop_and_stats_count_per_source()
     sources.STATS.clear()
     sources.search("piano", {**cfg, "sources": {"order": ["jamendo"]}}, {}, searchers={"jamendo": nc})
     assert sources.STATS["jamendo"] == {"queries": 1, "candidates": 1, "allowed": 0, "matched": 0, "downloaded": 0}
+
+
+def test_jamendo_api_failure_is_unavailable_not_an_empty_answer_and_the_key_stays_out_of_the_message(monkeypatch):
+    monkeypatch.setattr(sources, "get_json", lambda url, params=None, **k: {"headers": {"status": "failed", "code": 5, "error_message": "invalid client_id k123"}, "results": []})
+    cands, sts = sources.search("x", {**CFG, "sources": {"order": ["jamendo"]}}, {"JAMENDO_CLIENT_ID": "k123"}, searchers={"jamendo": sources._jamendo})
+    assert cands == [] and sts[0]["state"] == "unavailable"
+    monkeypatch.setattr(sources, "get_json", lambda url, params=None, **k: {"headers": {"status": "success"}, "results": [
+        {"name": "T", "artist_name": "A", "audiodownload": "https://x/a.mp3", "audiodownload_allowed": True, "license_ccurl": "https://creativecommons.org/licenses/by/3.0/", "duration": 200},
+        {"name": "N", "artist_name": "A", "audiodownload": "", "audiodownload_allowed": False}]})
+    cands, sts = sources.search("x", {**CFG, "sources": {"order": ["jamendo"]}}, {"JAMENDO_CLIENT_ID": "k123"}, searchers={"jamendo": sources._jamendo})
+    assert [(c.title, c.sec) for c in cands] == [("T", 200)] and sts[0]["state"] == "ok"
