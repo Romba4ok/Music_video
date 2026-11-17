@@ -524,11 +524,19 @@ def publish_dir(out, cfg, state_path, env=os.environ, buf=None, storage=None, no
     return results
 
 
-def failed(out):
-    """True when report.json says something went wrong that a human must see (the CI step must not end green)."""
+def failure_reasons(out):
+    """Why the CI step must end red: one line per cause, read from report.json. Empty = all fine."""
     rep = json.loads((Path(out) / "report.json").read_text(encoding="utf-8"))
     b = rep.get("buffer") or {}
-    return b.get("state") in ("error", "skipped") or bool(b.get("problems")) or any((s.get("buffer") or {}).get("state") == "error" for s in rep["songs"])
+    why = [f"buffer {b['state']}: {b.get('detail', '')}".strip()] if b.get("state") in ("error", "skipped") else []
+    why +=[f"post problem: {p}" for p in b.get("problems", [])]
+    why += [f"{s['song']}: {s['buffer'].get('detail', '')}" for s in rep["songs"] if (s.get("buffer") or {}).get("state") == "error"]
+    return why
+
+
+def failed(out):
+    """True when report.json says something went wrong that a human must see (the CI step must not end green)."""
+    return bool(failure_reasons(out))
 
 
 def summary(out):
@@ -602,7 +610,10 @@ def main(argv):
             return 0
         res = publish_dir(a.out, cfg, a.state)
         print(json.dumps(res, ensure_ascii=False))
-        return 1 if failed(a.out) else 0  # an error is never swallowed: the workflow step goes red, the mp4 stays in ready/
+        why = failure_reasons(a.out)
+        for w in why:  # the reason of a red step is in the log, not only in report.json
+            print(f"buffer: FAILED: {w}")
+        return 1 if why else 0  # an error is never swallowed: the workflow step goes red, the mp4 stays in ready/
     except BufferError as e:
         print(f"buffer: {e}")
         return 1

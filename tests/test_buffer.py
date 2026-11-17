@@ -311,6 +311,23 @@ def test_overdue_scheduled_post_is_a_problem():
     assert bp.refresh_statuses(unknown, FakeBuf(statuses={"P": bp.BufferError("boom")}), NOW) == [] and "status_note" in unknown["a"]
 
 
+def test_two_scheduled_but_red_names_the_cause_and_rerun_creates_nothing(tmp_path, capsys, monkeypatch):
+    """The CI incident: both new videos are scheduled, yet the step is red because an EARLIER post is still 'scheduled' long after its time.
+    The reason must be printed (not only stored in report.json) and a second run over the same videos must not create a single new post."""
+    out = make_out(tmp_path, n=2)
+    stale = {"old": {"mode": "queue", "post_id": "OLD", "status": "scheduled", "file": "old.mp4", "due": (NOW - timedelta(hours=3)).isoformat()}}
+    (tmp_path / "s.json").write_text(json.dumps(stale), encoding="utf-8")
+    buf = FakeBuf()
+    res = run(out, tmp_path, QUEUE, buf)
+    assert [r["state"] for r in res] == ["scheduled", "scheduled"] and len(buf.calls) == 2
+    assert bp.failed(out) and any("old.mp4" in w and "still 'scheduled'" in w for w in bp.failure_reasons(out))
+    again = run(out, tmp_path, QUEUE, buf)
+    assert [r["state"] for r in again] == ["duplicate", "duplicate"] and len(buf.calls) == 2
+    monkeypatch.setattr(bp, "publish_dir", lambda *a, **k: [])  # main() only reads the report the run above wrote
+    assert bp.main(["publish", str(out), "--state", str(tmp_path / "s.json")]) == 1
+    assert "buffer: FAILED: post problem: old.mp4" in capsys.readouterr().out
+
+
 def test_cleanup_waits_for_the_post_time_and_keeps_drafts():
     old = (NOW - timedelta(days=10)).isoformat()
     state = {"gone": {"hosted": True, "mode": "queue", "public_id": "gone", "uploaded_at": old, "due": (NOW - timedelta(days=3)).isoformat()},

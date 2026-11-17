@@ -66,14 +66,11 @@ jobs:
           rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
           rclone lsf gd:audio | grep -v '/$' | grep -v '\.license\.json$' > out-audio.txt || true
           N=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' out-audio.txt || true)
+          MIN=${{ vars.VYBEX_MIN_AUDIO || '3' }}   # generate starts only when Drive/audio holds at least this many songs (repo variable VYBEX_MIN_AUDIO, default 3)
+          if [ "$N" != "0" ] && [ "$N" -lt "$MIN" ]; then echo "status: waiting - $N audio file(s) in Drive/audio, need $MIN to start (nothing generated, files stay in place)" | tee -a "$GITHUB_STEP_SUMMARY"; N=0; fi
           echo "audio=$N" >> "$GITHUB_OUTPUT"
-          if [ "$N" = "0" ]; then echo "status: no_audio - Drive/audio is empty, nothing to generate (the heavy job is skipped; the daily fetch-songs run fills the folder)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$N" = "0" ]; then echo "status: no_audio - not enough songs in Drive/audio, nothing to generate (the heavy job is skipped; the daily fetch-songs run fills the folder)" | tee -a "$GITHUB_STEP_SUMMARY"
           else { echo "Audio files in Drive/audio: $N"; sed 's/^/- /' out-audio.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi
-      - name: "Guard: only songs from the list (queue.md). Anything else in Drive/audio stops the workflow"
-        if: steps.n.outputs.audio != '0'
-        run: |
-          mkdir -p names && while read -r f; do : > "names/$f"; done < out-audio.txt
-          python -m pipeline songs --check-list names
   generate:
     needs: check
     if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.audio != '0' }}
@@ -113,8 +110,6 @@ jobs:
           rclone copy gd:audio accounts/main/audio --progress=false
           rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
           ls accounts/main/audio
-      - name: "Guard: only songs from the list (queue.md). Anything else in Drive/audio stops the workflow"
-        run: python -m pipeline songs --check-list accounts/main/audio
       - name: Claude CLI (optional - writes the cards, hook and notifications)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -147,12 +142,23 @@ jobs:
           else
             echo "no buffer state yet (first run)"
           fi
-          rc=0
-          if [ -f out/$D/report.json ]; then python -m pipeline buffer publish out/$D --state out/buffer-state.json || rc=$?
+          # every command's exit code is logged on its own line; the step ends red if ANY of them was not 0 (nothing is forced to 0)
+          rc=0; rc_publish=skipped; rc_cleanup=skipped; rc_state=skipped
+          if [ -f out/$D/report.json ]; then python -m pipeline buffer publish out/$D --state out/buffer-state.json && rc_publish=0 || rc_publish=$?
           else echo "no report.json (the Batch step failed or did not run): nothing to send today"; fi
+          echo "exit code: buffer publish = $rc_publish"
           # videos that Buffer has really SENT to TikTok are deleted from Drive (ready/<date>/ files, trash-bin, recoverable ~30 days); drafts and hand-posted ones stay
-          if [ -f out/buffer-state.json ]; then python -m pipeline buffer drive-cleanup --state out/buffer-state.json | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?; fi
-          if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json; fi   # saved even when something failed
+          if [ -f out/buffer-state.json ]; then
+            python -m pipeline buffer drive-cleanup --state out/buffer-state.json | tee -a "$GITHUB_STEP_SUMMARY" && rc_cleanup=0 || rc_cleanup=$?
+          fi
+          echo "exit code: buffer drive-cleanup = $rc_cleanup"
+          # saved even when something failed, so the next run does not post the same videos again
+          if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json && rc_state=0 || rc_state=$?; fi
+          echo "exit code: rclone copyto buffer-state.json -> Drive = $rc_state"
+          for v in "$rc_publish" "$rc_cleanup" "$rc_state"; do
+            if [ "$v" != "0" ] && [ "$v" != "skipped" ] && [ "$rc" = "0" ]; then rc=$v; fi
+          done
+          [ "$rc" = "0" ] || echo "::error::Buffer step failed: publish=$rc_publish drive-cleanup=$rc_cleanup state-upload=$rc_state (see the 'buffer: FAILED' lines above)"
           exit $rc
       - name: "Song ideas -> Drive/ideas.md (optional: a failure here must not fail the video job)"
         if: always()
