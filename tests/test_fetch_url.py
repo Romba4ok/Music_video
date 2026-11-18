@@ -176,7 +176,7 @@ def test_download_only_checks_bytes_without_fabricating_a_license(server, tmp_pa
 
 
 def test_direct_queue_link_rejects_wrong_lyrics_before_saving(server, tmp_path, monkeypatch):
-    def reject(path, artist, title, hook, language):
+    def reject(path, artist, title, hook):
         assert path.is_file() and (artist, title, hook) == ("A", "T", "expected line")
         raise Refused("wrong lyrics")
 

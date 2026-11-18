@@ -355,7 +355,8 @@ def run(args, cfg=None, client=None):
         for site in args.sites:
             try:
                 candidates = client.search(site, f"{artist} {title}")
-                matched = [candidate for candidate in candidates if sources.matches(artist, title, candidate)]
+                matched = [candidate for candidate in candidates
+                           if sources.matches(artist, title, candidate, collaborations=download_only)]
                 report["sources"].append({"source": site, "candidates": len(candidates), "matched": len(matched)})
                 if not args.download:
                     report["sources"][-1]["tracks"] = [candidate.dict() for candidate in matched]

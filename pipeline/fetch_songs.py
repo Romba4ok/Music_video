@@ -161,7 +161,7 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
             dead.add(source)
         candidate_count += len(candidates)
         for c in candidates:
-            if not sources.matches(w["artist"], w["title"], c, w["sec"]) or c.url in seen_urls:
+            if not sources.matches(w["artist"], w["title"], c, w["sec"], collaborations=download_only) or c.url in seen_urls:
                 continue
             host = urlsplit(c.url).hostname
             if host in limited_hosts:
@@ -182,7 +182,7 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
                     side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
                     side.update(source_site=c.source, sha256=digest)
                     if download_only:
-                        side["identity"] = song_identity.verify(path, *track, w.get("popular_line", ""), cfg.get("language", "ru"))
+                        side["identity"] = song_identity.verify(path, *track, w.get("popular_line", ""))
                         side.update(usage_rights="not_evaluated", download_only=True, analysis_only=True)
                     final = to_mp3(path, staging / name)
                     download._sidecar(final, side)
@@ -380,7 +380,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
     sig = search_signature(cfg)
     if download_only:
-        sig = hashlib.sha1((sig + ":download-only-lyrics-v2").encode()).hexdigest()[:8]
+        sig = hashlib.sha1((sig + ":download-only-lyrics-v3").encode()).hexdigest()[:8]
     # Public catalogs exhaust the existing queue before asking for chart additions.
     cands = wanted(cfg, qtext, (lambda cfg: []) if download_only else fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}

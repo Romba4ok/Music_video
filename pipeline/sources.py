@@ -149,10 +149,33 @@ def _words(s):
     return re.findall(r"[^\W_]+", (s or "").casefold().replace("ё", "е").replace("'", "").replace("’", ""))
 
 
-def matches(artist, title, c, sec=0):
+_CREDIT_SEPARATOR = re.compile(r"\s+(?:feat(?:uring)?|ft)\.?\s+|\s+&\s+|[/;,]", re.I)
+_TITLE_GUEST = re.compile(r"\s+[\[(](?:feat(?:uring)?|ft)\.?\s+([^()\[\]]+)[\])]$", re.I)
+
+
+def split_credits(artist, title):
+    # Keep version labels in the title: a remix or a live recording is a different candidate.
+    guest = _TITLE_GUEST.search(title)
+    names = _CREDIT_SEPARATOR.split(artist)
+    if guest and not re.search(r"\b(remix|cover|live|version|edit|ремикс|кавер)\b", guest[1], re.I):
+        names.extend(_CREDIT_SEPARATOR.split(guest[1]))
+        title = title[:guest.start()]
+    return names[0].strip(), title.strip(), {tuple(_words(n)) for n in names[1:] if _words(n)}
+
+
+def matches(artist, title, c, sec=0, *, collaborations=False):
     """Match the artist and title independently, with a duration tolerance when known."""
     aw, tw = _words(artist), _words(title)
-    if not aw or not tw or aw != _words(c.artist) or tw != _words(c.title):
+    if not aw or not tw or not _words(c.artist) or not _words(c.title):
+        return False
+    if collaborations:
+        lead, wanted, guests = split_credits(artist, title)
+        credited, found, featured = split_credits(c.artist, c.title)
+        if not _words(lead) or not _words(wanted) or _words(wanted) != _words(found):
+            return False
+        if _words(lead) != _words(credited) or not guests <= featured:
+            return False
+    elif aw != _words(c.artist) or tw != _words(c.title):
         return False
     if not sec or not c.sec:
         return True

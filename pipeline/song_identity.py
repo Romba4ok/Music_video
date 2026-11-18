@@ -1,6 +1,5 @@
 """Check downloaded audio against the requested song before it leaves staging."""
 import json
-import re
 import subprocess
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -14,7 +13,8 @@ from .common import Refused, get_json
 
 @lru_cache(maxsize=128)
 def _references(artist, title):
-    rows = get_json("https://lrclib.net/api/search", {"artist_name": artist, "track_name": title},
+    lead, track, _ = sources.split_credits(artist, title)
+    rows = get_json("https://lrclib.net/api/search", {"artist_name": lead, "track_name": track},
                     timeout=6, retries=1)
     if not isinstance(rows, list):
         raise ValueError("unexpected lyrics service response")
@@ -24,7 +24,7 @@ def _references(artist, title):
             continue
         candidate = sources.Candidate("lrclib", row.get("trackName") or "", row.get("artistName") or "")
         lyrics = row.get("plainLyrics")
-        if sources.matches(artist, title, candidate) and isinstance(lyrics, str) and lyrics.strip():
+        if sources.matches(artist, title, candidate, collaborations=True) and isinstance(lyrics, str) and lyrics.strip():
             texts.append(lyrics)
     return tuple(dict.fromkeys(texts))
 
@@ -38,14 +38,9 @@ def _check_tags(path, artist, title):
     if result.returncode:
         raise Refused("identity: unreadable audio metadata")
     tags = {k.lower(): v for k, v in json.loads(result.stdout).get("format", {}).get("tags", {}).items()}
-    if tags.get("title") and sources._words(tags["title"]) != sources._words(title):
-        raise Refused("identity: embedded title differs from the requested title")
-    credits = tags.get("artist", "")
-    # The queue sometimes lists the lead artist while the file also credits guests.
-    lead = re.split(r"[/;,&]|\s+(?:feat\.?|ft\.?)\s+", credits, maxsplit=1, flags=re.I)[0]
-    names = [credits, lead]
-    if credits and all(sources._words(name) != sources._words(artist) for name in names):
-        raise Refused("identity: embedded artist differs from the requested artist")
+    embedded = sources.Candidate("tags", tags.get("title") or title, tags.get("artist") or artist)
+    if not sources.matches(artist, title, embedded, collaborations=True):
+        raise Refused("identity: embedded artist, guests or title differ from the requested recording")
 
 
 @lru_cache(maxsize=1)
@@ -74,7 +69,7 @@ def _overlap(sample, reference, hook=False):
     return len(words) >= 8 and len(set(words)) >= 6
 
 
-def verify(path, artist, title, hook="", language="ru"):
+def verify(path, artist, title, hook="", language=None):
     _check_tags(path, artist, title)
     hooks = [line for line in hook.split("||") if len(set(sources._words(line))) >= 4]
     lookup_failed = False

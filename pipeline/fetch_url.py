@@ -111,11 +111,11 @@ def fetch_download_only(url, artist, title, out, cfg=None, http=requests, known_
     cfg = cfg or load_config()
     dc = {**DEFAULTS, **cfg.get("direct_urls", {})}
     return _fetch_verified(url, artist, title, out, dc, "", "", http, known_sha, check, download_only=True,
-                           queue_hook=queue_hook, language=cfg.get("language", "ru"))
+                           queue_hook=queue_hook)
 
 
 def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sha, check, *, download_only=False,
-                    queue_hook=None, language="ru"):
+                    queue_hook=None):
     """Transfer and verify bytes after the caller has decided the usage policy."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -166,7 +166,7 @@ def _fetch_verified(url, artist, title, out, dc, license, rights, http, known_sh
         if download_only:
             metadata.update(license="", rights="", usage_rights="not_evaluated", download_only=True, analysis_only=True)
         if queue_hook is not None:
-            metadata["identity"] = song_identity.verify(final, artist, title, queue_hook, language)
+            metadata["identity"] = song_identity.verify(final, artist, title, queue_hook)
         download._sidecar(final, metadata)
         download.publish_audio(final, final, out)
     return name, digest, f"url {urlparse(url).hostname} sha256:{digest[:16]}"
