@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import qa, render, script_gen
-from .common import ROOT, load_config
+from .common import ROOT, load_config, plain
 
 
 def fmt_ts(s):
@@ -86,9 +86,9 @@ def build_one(d, n, cfg):
         preview = bool(side and Path(str(side) + ".license.json").exists() and json.loads(Path(str(side) + ".license.json").read_text(encoding="utf-8")).get("analysis_only"))
         sync = sync_info(spec, plan, preview)
         meta["sync"] = sync
-        (d / f"sync-{n}.json").write_text(json.dumps(sync, ensure_ascii=False, indent=1), encoding="utf-8")
+        (d / f"sync-{n}.json").write_text(json.dumps(sync, ensure_ascii=False, default=plain, indent=1), encoding="utf-8")
         (d / f"sync-{n}.txt").write_text("\n".join(f"{i}. {s}" for i, s in enumerate(sync["steps"], 1)), encoding="utf-8")
-    (d / f"meta-{n}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    (d / f"meta-{n}.json").write_text(json.dumps(meta, ensure_ascii=False, default=plain, indent=1), encoding="utf-8")
     return sid, lines, video
 
 

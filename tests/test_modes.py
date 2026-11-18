@@ -266,3 +266,24 @@ def test_fetch_audio_never_downloads_a_track_that_is_not_the_wanted_song(tmp_pat
     monkeypatch.setattr(batch.sources, "search", lambda q, cfg, n=5: ([wrong, right], []))
     batch.fetch_audio(entry, {"audio_dir": "."}, "auto")
     assert got == ["днями и ночами"]
+
+
+def test_json_default_turns_numpy_scalars_into_plain_values_and_still_rejects_other_objects():
+    import json as _j
+    import pytest
+    from pipeline.common import plain
+    np = pytest.importorskip("numpy")
+    assert _j.loads(_j.dumps({"a": np.bool_(True), "b": np.float32(1.5), "c": np.int64(2)}, default=plain)) == {"a": True, "b": 1.5, "c": 2}
+    with pytest.raises(TypeError):
+        _j.dumps({"x": object()}, default=plain)
+
+
+def test_batch_report_keeps_the_traceback_of_a_song_that_crashed(tmp_path):
+    from pipeline import batch
+    (tmp_path / "accounts" / "main").mkdir(parents=True)
+    (tmp_path / "accounts" / "main" / "queue.md").write_text("A | T | | \n", encoding="utf-8")
+    def boom(*a):
+        raise ValueError("boom")
+    s = batch.run_batch("auto", 1, "2026-01-01", cfg={"audio_dir": "audio", "whisper": {}}, root=tmp_path, stages={"fetch": boom})
+    r = s["songs"][0]
+    assert r["stages"]["error"].startswith("ValueError") and "boom" in r["traceback"] and "in boom" in r["traceback"]
