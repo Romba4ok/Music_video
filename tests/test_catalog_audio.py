@@ -184,6 +184,22 @@ def test_all_seven_requested_catalogs_are_registered():
     assert set(catalog_audio.SITES) == {'hitmo', 'sefon', 'mp3pm', 'muzlap', 'muztop', 'spaces', 'hitparad'}
 
 
+def test_extra_catalog_result_404_is_an_empty_query_not_a_dead_source():
+    calls = []
+
+    class HTTP:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if '/find?' in url:
+                return Response(url, code=404)
+            return Response(url, '<form action="/find"><input name="q"></form>')
+
+    client = catalog_audio.CatalogClient(HTTP())
+    assert client.search('hitparad', 'First missing song') == []
+    assert client.search('hitparad', 'Next song') == []
+    assert len(calls) == 4
+
+
 class Response:
     def __init__(self, url, text="", code=200, headers=None):
         self.url, self.text, self.status_code = url, text, code

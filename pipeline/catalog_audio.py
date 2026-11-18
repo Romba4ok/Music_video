@@ -253,13 +253,19 @@ class CatalogClient:
     def public_search(self, site, query):
         base, path = SITES[site]
 
-        def page(url, data=None):
+        def page(url, data=None, missing_ok=False):
             for _ in range(6):
                 parsed = urlsplit(url)
                 if (parsed.scheme != 'https' or parsed.netloc != urlsplit(base).netloc
                         or parsed.username or parsed.password):
                     raise Refused('public search redirected outside its HTTPS origin')
-                with self.request(url, data=data) as response:
+                try:
+                    response = self.request(url, data=data)
+                except requests.HTTPError as exc:
+                    if missing_ok and getattr(exc.response, 'status_code', None) == 404:
+                        return None
+                    raise
+                with response:
                     if response.is_redirect:
                         url = urljoin(url, response.headers['Location'])
                         if response.status_code in (301, 302, 303):
@@ -282,7 +288,9 @@ class CatalogClient:
         if form['method'] == 'get':
             target += ('&' if '?' in target else '?') + urlencode(data)
             data = None
-        result = page(target, data)
+        result = page(target, data, missing_ok=True)
+        if result is None:
+            return []
         if not result.tracks and not result.empty:
             raise Refused('public search returned no readable audio metadata')
         return result.tracks
