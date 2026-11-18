@@ -184,7 +184,7 @@ jobs:
           [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
           [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
           echo "Results: Drive/ready/$D." >> "$GITHUB_STEP_SUMMARY"
-      - name: "Clear the songs this run looked at from Drive/audio (built or not; set repo variable VYBEX_CLEAN_AUDIO=0 to switch off)"
+      - name: "Empty Drive/audio completely (video built or not; set repo variable VYBEX_CLEAN_AUDIO=0 to switch off)"
         if: always() && vars.VYBEX_CLEAN_AUDIO != '0'
         run: bash scripts/drive_clean_audio.sh "out/$(date -u +%F)/report.json"
       - name: "Memory + cleanup: when Drive/audio has no songs left, remember what was processed, then empty done/ (scripts/drive_clean.sh)"
