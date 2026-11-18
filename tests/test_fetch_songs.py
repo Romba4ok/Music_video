@@ -295,6 +295,7 @@ def test_download_only_exhausts_queue_then_appends_unseen_chart_tracks(tmp_path,
     queue_update = tmp_path / 'queue-next.md'
     entries = fetch_songs.parse_queue(queue_update.read_text(encoding='utf-8'))
     assert [(e['artist'], e['title']) for e in entries] == [('Old', 'Старая'), ('A', 'Первая'), ('B', 'Вторая'), ('C', 'Третья'), ('D', 'Четвёртая')]
+    assert entries[-1]['audio_file'] == 'D - Четвёртая.mp3'
     report = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert report['skipped_known'] == 1 and report['chart_checked'] is True
     assert len(report['queue_added']) == 2 and report['queue_update_file'] == str(queue_update)

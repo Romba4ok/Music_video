@@ -413,7 +413,12 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         enqueue(fresh)
         if fresh:
             cell = lambda value: ' '.join(value.replace('|', '/').split())
-            queue_added.extend(f"{cell(w['artist'])} | {cell(w['title'])} | |" for w in fresh)
+            # Keep the explicit file field so the existing consumer applies its
+            # normal metadata/usage checks to chart tracks as well.
+            queue_added.extend(
+                f"{cell(w['artist'])} | {cell(w['title'])} | | {download._slug(w['artist'])} - {download._slug(w['title'])}.mp3"
+                for w in fresh
+            )
             queue_update = state_f.with_name('queue-next.md')
             queue_update.parent.mkdir(parents=True, exist_ok=True)
             queue_update.write_text(qtext.rstrip() + '\n\n' + '\n'.join(queue_added) + '\n', encoding='utf-8')
