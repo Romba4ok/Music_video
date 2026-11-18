@@ -64,10 +64,16 @@ def save_memory(path, st, keep_skipped=300):
 def record_used(st, names, today):
     """Names of audio files that were processed (Drive/done): remembered as used, so the folder can be emptied without forgetting them."""
     for n in names:
+        if Path(n.strip()).suffix.lower() not in ('.mp3', '.wav', '.m4a', '.ogg', '.flac', '.mp4', '.webm', '.mkv', '.mov'):
+            continue
         a, t = parse_name(os.path.splitext(n.strip())[0])
-        if t and key(a, t) not in st["done"]:
-            st["done"][key(a, t)] = {"status": "used", "date": today, "song": f"{a} - {t}" if a else t, "file": n.strip(), "detail": ""}
-            st["skipped"].pop(key(a, t), None)
+        k = key(a, t)
+        previous = st['done'].get(k, {})
+        if t and previous.get('status') != 'used':
+            st["done"][k] = {**previous, "status": "used", "date": today,
+                             "song": previous.get('song') or (f"{a} - {t}" if a else t),
+                             "file": n.strip(), "detail": previous.get('detail', '')}
+            st["skipped"].pop(k, None)
 
 
 def known_sha(st):
@@ -299,7 +305,7 @@ def discover(cfg, out, seen, need, find=None, sleep=time.sleep, day=None):
     return got
 
 
-ALGO_VERSION = "2026-11-17.5"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
+ALGO_VERSION = "2026-11-18.1"  # bump it when the search / matching algorithm changes: every skipped song is then searched again
 
 
 def search_signature(cfg, env=None):
@@ -373,7 +379,8 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     sig = search_signature(cfg)
     if download_only:
         sig = hashlib.sha1((sig + ":download-only-v1").encode()).hexdigest()[:8]
-    cands = wanted(cfg, qtext, fetch_chart, taste)
+    # Public catalogs exhaust the existing queue before asking for chart additions.
+    cands = wanted(cfg, qtext, (lambda cfg: []) if download_only else fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
     sources.STATS.clear()
     octx = official.Ctx(cache_file=state_f.with_name("musicbrainz-cache.json"))  # MusicBrainz / page answers are shared by all songs of this run
@@ -381,15 +388,44 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         print("songs: MUSICBRAINZ_CONTACT не настроен: MusicBrainz получит User-Agent 'VYBEX/1.0' без контакта (задайте переменную репозитория с вашим адресом или URL проекта)", file=sys.stderr)
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
-    for w in cands:
-        k = key(w["artist"], w["title"])
-        if k in have or k in state["done"]:
-            continue
-        sk = state["skipped"].get(k)
-        if sk is None or needs_recheck(sk, sig, today, a.force_retry) or (a.previews and k in qkeys):
-            pending.append((w, k, sk))
-        else:
-            blocked += 1  # skipped under the same search signature less than RETRY_DAYS ago, no source failed: nothing new could be found
+    skipped_known, chart_checked, queue_added = 0, not download_only, []
+    queue_update = None
+
+    def enqueue(items):
+        nonlocal blocked, skipped_known
+        for w in items:
+            k = key(w['artist'], w['title'])
+            if k in have or k in state['done']:
+                skipped_known += 1
+                continue
+            sk = state['skipped'].get(k)
+            if sk is None or needs_recheck(sk, sig, today, a.force_retry) or (a.previews and k in qkeys):
+                pending.append((w, k, sk))
+            else:
+                blocked += 1
+
+    def refill_from_chart():
+        nonlocal chart_checked, queue_update
+        chart_checked = True
+        seen = {key(w['artist'], w['title']) for w in cands} | set(have) | set(state['done'])
+        fresh = [w for w in wanted(cfg, '', fetch_chart, taste) if key(w['artist'], w['title']) not in seen]
+        cands.extend(fresh)
+        enqueue(fresh)
+        if fresh:
+            cell = lambda value: ' '.join(value.replace('|', '/').split())
+            # Keep the explicit file field so the existing consumer applies its
+            # normal metadata/usage checks to chart tracks as well.
+            queue_added.extend(
+                f"{cell(w['artist'])} | {cell(w['title'])} | | {download._slug(w['artist'])} - {download._slug(w['title'])}.mp3"
+                for w in fresh
+            )
+            queue_update = state_f.with_name('queue-next.md')
+            queue_update.parent.mkdir(parents=True, exist_ok=True)
+            queue_update.write_text(qtext.rstrip() + '\n\n' + '\n'.join(queue_added) + '\n', encoding='utf-8')
+
+    enqueue(cands)
+    if download_only and not pending and a.max > 0 and a.tries > 0:
+        refill_from_chart()
     done_n = 0
     for w, k, sk in pending:
         if len(got) >= a.max or tries >= a.tries:
@@ -448,6 +484,8 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             for s, st in re.findall(r"([\w-]+):(empty|needs_auth|unavailable|refused|ok)\b", why):
                 src_states[f"{s}:{st}"] = src_states.get(f"{s}:{st}", 0) + 1
         sleep(1)  # be polite to the free APIs
+        if download_only and not chart_checked and done_n == len(pending) and len(got) < a.max and tries < a.tries:
+            refill_from_chart()
     if a.discover and len(got) < a.max:
         seen = set(have) | set(state["done"]) | set(state["skipped"])
         for w, name, why in discover(cfg, out, seen, a.max - len(got), find, sleep):
@@ -460,6 +498,9 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     if links:
         official.save_links(state_f.with_name("song-links.md"), links, today)
     report = {"download_only": download_only, "usage_rights": "not_evaluated" if download_only else "policy_checked",
+              "configured_sources": cfg.get('sources', {}).get('order', []),
+              "skipped_known": skipped_known, "chart_checked": chart_checked,
+              "queue_added": queue_added, "queue_update_file": str(queue_update) if queue_update else None,
               "songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
               "skip_reasons": skip_kinds, "source_states": src_states, "sources": sources.STATS, "http": http_summary(), "musicbrainz_contact": bool(octx.contact), "signature": sig, "force_retry": bool(a.force_retry)}
