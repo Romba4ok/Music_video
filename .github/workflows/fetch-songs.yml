@@ -96,6 +96,8 @@ jobs:
       - name: Upload to Drive/audio, then save the memory
         shell: bash
         run: |
+          QUEUE_UPDATE=$(tail -n 1 out/songs.json | python -c "import json,sys;print(json.load(sys.stdin).get('queue_update_file') or '')")
+          if [ -n "$QUEUE_UPDATE" ]; then rclone copyto "$QUEUE_UPDATE" gd:queue.txt; fi
           if [ -n "$(ls -A out/fetched 2>/dev/null)" ]; then rclone copy out/fetched gd:audio; fi
           if [ -f out/song-links.md ]; then rclone copyto out/song-links.md gd:state/song-links.md; fi   # pages of songs found on the artists' own sites (no file to download)
           if [ -f out/musicbrainz-cache.json ]; then rclone copyto out/musicbrainz-cache.json gd:state/musicbrainz-cache.json; fi   # answers of MusicBrainz (30 days): the same release is never asked twice

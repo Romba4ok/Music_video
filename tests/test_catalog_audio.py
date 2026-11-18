@@ -124,6 +124,66 @@ def test_proxy_applies_to_public_post_search(monkeypatch):
     assert catalog_audio.CatalogClient(HTTP()).search('muzlap', 'Xcho Ветер')
 
 
+@pytest.mark.parametrize('site', ['muztop', 'spaces', 'hitparad'])
+def test_extra_catalogs_follow_only_the_published_public_search_form(site):
+    base, path = catalog_audio.SITES[site]
+    calls = []
+    form = '<form action="/find" method="get"><input name="q" type="search"><input type="hidden" name="kind" value="audio"></form>'
+    result = '<script type="application/ld+json">' + json.dumps({
+        '@type': 'MusicRecording', 'name': 'Ветер', 'byArtist': {'name': 'Xcho'},
+        'duration': 'PT2M17S', 'audio': {'@type': 'AudioObject', 'contentUrl': base + '/file.mp3'},
+    }) + '</script>'
+
+    class HTTP:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, form if len(calls) == 1 else result)
+
+    track, = catalog_audio.CatalogClient(HTTP()).search(site, 'Xcho Ветер')
+    assert calls[0] == base + path and calls[1].startswith(base + '/find?')
+    assert 'kind=audio' in calls[1] and 'q=Xcho' in calls[1]
+    assert (track.artist, track.title, track.sec, track.url) == ('Xcho', 'Ветер', 137, base + '/file.mp3')
+
+
+def test_extra_catalog_does_not_execute_access_challenge_or_send_login():
+    calls = []
+
+    class HTTP:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, '<script>document.cookie="js_passed=2"</script>')
+
+    with pytest.raises(common.Refused, match='challenge'):
+        catalog_audio.CatalogClient(HTTP()).search('spaces', 'Xcho Ветер')
+    assert len(calls) == 1
+
+
+def test_extra_catalog_refuses_search_form_on_an_unrelated_host():
+    calls = []
+
+    class HTTP:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return Response(url, '<form action="https://other.example/find"><input name="q"></form>')
+
+    with pytest.raises(common.Refused, match='origin'):
+        catalog_audio.CatalogClient(HTTP()).search('muztop', 'Xcho Ветер')
+    assert len(calls) == 1
+
+
+def test_login_form_is_not_used_as_public_search():
+    class HTTP:
+        def get(self, url, **kwargs):
+            return Response(url, '<form><input name="q"><input name="password" type="password"></form>')
+
+    with pytest.raises(common.Refused, match='no public search'):
+        catalog_audio.CatalogClient(HTTP()).search('hitparad', 'Xcho Ветер')
+
+
+def test_all_seven_requested_catalogs_are_registered():
+    assert set(catalog_audio.SITES) == {'hitmo', 'sefon', 'mp3pm', 'muzlap', 'muztop', 'spaces', 'hitparad'}
+
+
 class Response:
     def __init__(self, url, text="", code=200, headers=None):
         self.url, self.text, self.status_code = url, text, code

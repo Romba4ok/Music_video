@@ -20,6 +20,7 @@ import requests
 from . import download, fetch_songs, fetch_url, sources
 from .batch import parse_queue
 from .common import HTTP_LOG, ROOT, Refused, load_config, safe_err
+from .public_catalog import read_public_html
 
 
 SITES = {
@@ -27,12 +28,18 @@ SITES = {
     "sefon": ("https://sefon.pro", "/search/"),
     "mp3pm": ("https://mp3.pm", "/"),
     "muzlap": ("https://muzlap.com", "/"),
+    "muztop": ("https://muz-top.me", "/"),
+    "spaces": ("https://spaces.im", "/music-online/"),
+    "hitparad": ("https://hitparad.fm", "/"),
 }
 DOWNLOAD_HOSTS = {
     "hitmo": ("ru.hitmoz.org", "deliciousoranges.com"),
     "sefon": ("sefon.pro",),
     "mp3pm": ("mp3.pm",),
     "muzlap": ("muzlap.com",),
+    "muztop": ("muz-top.me",),
+    "spaces": ("spaces.im", "spac.me"),
+    "hitparad": ("hitparad.fm",),
 }
 UA = "vybex-fetch/1.0"
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -204,6 +211,8 @@ class CatalogClient:
 
     def search(self, site, query):
         base, path = SITES[site]
+        if site in ("muztop", "spaces", "hitparad"):
+            return self.public_search(site, query)
         if site == "mp3pm":
             # This is the public search form's own endpoint (SearchElementCtrl).
             # Its obsolete GET form returns the home page for every query.
@@ -240,6 +249,43 @@ class CatalogClient:
                     continue
                 return parse_tracks(response.text, site, url)
         raise Refused("too many catalog redirects")
+
+    def public_search(self, site, query):
+        base, path = SITES[site]
+
+        def page(url, data=None):
+            for _ in range(6):
+                parsed = urlsplit(url)
+                if (parsed.scheme != 'https' or parsed.netloc != urlsplit(base).netloc
+                        or parsed.username or parsed.password):
+                    raise Refused('public search redirected outside its HTTPS origin')
+                with self.request(url, data=data) as response:
+                    if response.is_redirect:
+                        url = urljoin(url, response.headers['Location'])
+                        if response.status_code in (301, 302, 303):
+                            data = None
+                        continue
+                    html = response.text
+                    if re.search(r'js_passed|/cdn-cgi/challenge-platform|cf-chl-|enable javascript and cookies', html, re.I):
+                        print(json.dumps({'catalog_refused': site, 'detail': 'JavaScript/access challenge; not bypassed'}),
+                              file=sys.stderr, flush=True)
+                        raise Refused('public catalog requires a JavaScript/access challenge')
+                    return read_public_html(html, site, url)
+            raise Refused('too many public catalog redirects')
+
+        home = page(base + path)
+        if not home.forms:
+            raise Refused('no public search form is available')
+        form = home.forms[0]
+        data = {**form['hidden'], form['query']: query}
+        target = form['action']
+        if form['method'] == 'get':
+            target += ('&' if '?' in target else '?') + urlencode(data)
+            data = None
+        result = page(target, data)
+        if not result.tracks and not result.empty:
+            raise Refused('public search returned no readable audio metadata')
+        return result.tracks
 
     def get(self, url, **kwargs):
         """The direct downloader checks each redirect host before requesting it."""

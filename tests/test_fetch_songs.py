@@ -178,6 +178,38 @@ def test_fetch_one_leaves_a_rate_limited_download_host_and_tries_another(tmp_pat
     assert name == "Tasso - Таю.mp3" and attempts == [urls[0], urls[2]]
 
 
+def test_all_catalogs_are_tried_before_the_next_song_and_blocked_source_is_not_hammered(tmp_path):
+    from pipeline import catalog_audio
+    order = list(catalog_audio.SITES)
+    cfg = {'licenses_allowed': ['by'], 'sources': {'order': order}}
+    calls = []
+
+    def query(site, text, *args):
+        calls.append((site, text))
+        if site == order[0]:
+            response = requests.Response()
+            response.status_code = 403
+            raise requests.HTTPError(response=response)
+        return [cand(source=site)] if site == order[-1] and 'Таю' in text else []
+
+    searchers = {site: (lambda text, *args, site=site: query(site, text, *args)) for site in order}
+    dead = set()
+    assert fetch_songs.fetch_one({'artist': 'A', 'title': 'Не найдена', 'sec': 0}, cfg, tmp_path,
+                                searchers=searchers, dead=dead, download_only=True)[0] is None
+    assert [site for site, _ in calls] == order
+    assert dead == {order[0]}
+
+    def save(c, destination, cfg):
+        path = destination / 'raw.mp3'
+        path.write_bytes(b'checked audio')
+        return path
+
+    assert fetch_songs.fetch_one({'artist': 'Tasso', 'title': 'Таю', 'sec': 0}, cfg, tmp_path,
+                                searchers=searchers, dead=dead, dl=save,
+                                check=lambda path, **kwargs: (path, []), download_only=True)[0] == 'Tasso - Таю.mp3'
+    assert [site for site, _ in calls[len(order):]] == order[1:]
+
+
 def run_args(tmp_path, queue="", **kw):
     q = tmp_path / "queue.md"
     q.write_text(queue, encoding="utf-8")
@@ -226,6 +258,65 @@ def test_record_used_only_mode_searches_nothing(tmp_path):
     a.record_used = str(names)
     assert fetch_songs.run(a, {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}, {"openverse": lambda *x: 1 / 0}, lambda c: 1 / 0) == []
     assert len(fetch_songs.load_memory(tmp_path / "memory.md")["done"]) == 1
+
+
+def test_record_used_upgrades_downloaded_history_without_losing_hash():
+    k = fetch_songs.key('Tasso', 'Таю')
+    state = {'done': {k: {'status': 'downloaded', 'date': '2026-11-16', 'song': 'Tasso - Таю',
+                         'file': 'Tasso - Таю.mp3', 'detail': 'mp3pm sha256:0123456789abcdef'}}, 'skipped': {}}
+    fetch_songs.record_used(state, ['Tasso - Таю.mp3', 'Tasso - Таю.mp3.license.json'], '2026-11-18')
+    assert len(state['done']) == 1 and state['done'][k]['status'] == 'used'
+    assert fetch_songs.known_sha(state) == {'0123456789abcdef'}
+    assert fetch_songs.taste_artists(state) == {'tasso'}
+
+
+def test_download_only_exhausts_queue_then_appends_unseen_chart_tracks(tmp_path, monkeypatch, capsys):
+    args = run_args(tmp_path, '# Existing queue\nOld | Старая | |\nA | Первая | |\nB | Вторая | |\n', download_only=True)
+    args.max = 3
+    state = {'done': {fetch_songs.key('Old', 'Старая'): {'status': 'used', 'date': '2026-11-17',
+                     'song': 'Old - Старая', 'file': 'Old - Старая.mp3', 'detail': ''}}, 'skipped': {}}
+    fetch_songs.save_memory(args.state, state)
+    events = []
+
+    def find(w, cfg, out, **kwargs):
+        events.append(w['artist'])
+        return (None, 'not found in any catalog') if w['artist'] == 'A' else (w['artist'] + '.mp3', 'verified')
+
+    def chart(cfg):
+        events.append('chart')
+        return [{'title': 'Old - Старая'}, {'title': 'B - Вторая'}, {'title': 'C - Третья'}, {'title': 'D - Четвёртая'}]
+
+    monkeypatch.setattr(fetch_songs, 'fetch_one', find)
+    original = open(args.queue, encoding='utf-8').read()
+    got = fetch_songs.run(args, fetch_chart=chart, sleep=lambda _: None)
+    assert got == ['B.mp3', 'C.mp3', 'D.mp3']
+    assert events == ['A', 'B', 'chart', 'C', 'D']
+    assert open(args.queue, encoding='utf-8').read() == original
+    queue_update = tmp_path / 'queue-next.md'
+    entries = fetch_songs.parse_queue(queue_update.read_text(encoding='utf-8'))
+    assert [(e['artist'], e['title']) for e in entries] == [('Old', 'Старая'), ('A', 'Первая'), ('B', 'Вторая'), ('C', 'Третья'), ('D', 'Четвёртая')]
+    report = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert report['skipped_known'] == 1 and report['chart_checked'] is True
+    assert len(report['queue_added']) == 2 and report['queue_update_file'] == str(queue_update)
+
+
+def test_download_only_does_not_request_chart_when_existing_queue_fills_target(tmp_path, monkeypatch):
+    args = run_args(tmp_path, 'A | Первая | |\nB | Вторая | |\n', download_only=True)
+    args.max = 1  # Existing workflow already counted the two unused Drive files.
+    events = []
+    monkeypatch.setattr(fetch_songs, 'fetch_one', lambda w, *a, **kw: (events.append(w['artist']) or 'one.mp3', 'verified'))
+    fetch_songs.run(args, fetch_chart=lambda cfg: events.append('chart') or [], sleep=lambda _: None)
+    assert events == ['A']
+    assert not (tmp_path / 'queue-next.md').exists()
+
+
+def test_zero_missing_audio_does_not_request_catalogs_or_chart(tmp_path, monkeypatch):
+    args = run_args(tmp_path, '', download_only=True)
+    args.max = 0
+    events = []
+    monkeypatch.setattr(fetch_songs, 'fetch_one', lambda *a, **kw: events.append('search'))
+    assert fetch_songs.run(args, fetch_chart=lambda cfg: events.append('chart') or [], sleep=lambda _: None) == []
+    assert events == []
 
 
 def test_chart_keeps_only_russian_or_owners_artists_owners_first():
