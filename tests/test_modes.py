@@ -236,6 +236,20 @@ def test_a_preview_file_is_refused_in_auto_mode_and_allowed_in_tiktok_mode(tmp_p
     assert batch.fetch_audio(entry, cfg, "tiktok")[0] == tmp_path / "A - T.mp3"
 
 
+def test_download_only_full_track_is_used_in_auto_mode_when_the_owner_declares_rights(tmp_path, monkeypatch):
+    import json as _j
+    from pipeline import batch
+    (tmp_path / "A - T.mp3").write_bytes(b"x")
+    (tmp_path / "A - T.mp3.license.json").write_text(_j.dumps({"analysis_only": True, "download_only": True}), encoding="utf-8")
+    monkeypatch.setattr(batch, "ROOT", tmp_path)
+    monkeypatch.setattr(batch.download, "ensure_audio", lambda p, r=False: p)
+    entry = {"artist": "A", "title": "T", "popular_line": "", "audio_file": "A - T.mp3"}
+    monkeypatch.delenv("VYBEX_OWNER_DECLARES_RIGHTS", raising=False)
+    assert batch.fetch_audio(entry, {"audio_dir": "."}, "auto")[0] is None
+    monkeypatch.setenv("VYBEX_OWNER_DECLARES_RIGHTS", "1")
+    assert batch.fetch_audio(entry, {"audio_dir": "."}, "auto")[0] == tmp_path / "A - T.mp3"
+
+
 def test_fetch_audio_never_downloads_a_track_that_is_not_the_wanted_song(tmp_path, monkeypatch):
     """A fuzzy source search ('bushido' -> 'Bushido Flava - Kutinava') must not become the sound of 'BUSHIDO ZHO - днями и ночами'."""
     from pipeline import batch, sources

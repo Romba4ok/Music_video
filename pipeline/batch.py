@@ -144,7 +144,9 @@ def fetch_audio(entry, cfg, mode):
         entry = dict(entry, audio_file=next((f.name for f in sorted(ad.glob("*")) if f.suffix.lower() in AUDIO_EXT and all(w in f.stem.lower() for w in ws)), ""))
     if entry["audio_file"] and (ad / entry["audio_file"]).exists():
         side = ad / (entry["audio_file"] + ".license.json")
-        if mode == "auto" and side.exists() and json.loads(side.read_text(encoding="utf-8")).get("analysis_only"):
+        meta = json.loads(side.read_text(encoding="utf-8")) if side.exists() else {}
+        # download_only (fetch-songs) marks a FULL track whose rights were not checked; the owner's standing declaration covers it. Only a real preview stays refused
+        if mode == "auto" and meta.get("analysis_only") and not (meta.get("download_only") and _declared(ad, entry["audio_file"])):
             # an official 30 s preview is for lyric timing only: it must never become the sound of a published video
             return None, [{"source": "local", "state": "refused", "detail": "official preview: analysis only, run with mode tiktok (sound is added in TikTok)"}]
         return download.ensure_audio(ad / entry["audio_file"], _declared(ad, entry["audio_file"])), [
