@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from . import download, official, song_ideas, sources
+from . import download, official, song_identity, song_ideas, sources
 from .batch import parse_queue
 from .common import ROOT, http_summary, license_ok, load_config, parse_name, safe_err
 
@@ -96,7 +96,8 @@ def fits(artist, title, taste):
 def wanted(cfg, queue_text="", fetch_chart=None, taste=frozenset()):
     """[{artist, title, sec}] queue first (curated by brief.md), then the chart songs that fit (Russian / owner's artists; owner's artists first).
     Chart failure = queue only."""
-    out = [{"artist": e["artist"], "title": e["title"], "sec": 0, "url": e["audio_file"] if e["audio_file"].lower().startswith(("http://", "https://")) else ""}
+    out = [{"artist": e["artist"], "title": e["title"], "popular_line": e["popular_line"],
+            "sec": 0, "url": e["audio_file"] if e["audio_file"].lower().startswith(("http://", "https://")) else ""}
            for e in parse_queue(queue_text)]
     try:
         rows = (fetch_chart or _chart)(cfg)
@@ -181,6 +182,7 @@ def fetch_one(w, cfg, out, searchers=None, dl=None, check=None, dead=None, *, kn
                     side = json.loads(lic.read_text(encoding="utf-8")) if lic.exists() else {"attribution": c.attribution(), "license": c.license}
                     side.update(source_site=c.source, sha256=digest)
                     if download_only:
+                        side["identity"] = song_identity.verify(path, *track, w.get("popular_line", ""), cfg.get("language", "ru"))
                         side.update(usage_rights="not_evaluated", download_only=True, analysis_only=True)
                     final = to_mp3(path, staging / name)
                     download._sidecar(final, side)
@@ -378,7 +380,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
     sig = search_signature(cfg)
     if download_only:
-        sig = hashlib.sha1((sig + ":download-only-v1").encode()).hexdigest()[:8]
+        sig = hashlib.sha1((sig + ":download-only-lyrics-v2").encode()).hexdigest()[:8]
     # Public catalogs exhaust the existing queue before asking for chart additions.
     cands = wanted(cfg, qtext, (lambda cfg: []) if download_only else fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}
@@ -440,7 +442,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             try:
                 if download_only:
                     name, digest, why = fetch_url.fetch_download_only(w["url"], w["artist"], w["title"], out, cfg,
-                                                                    known_sha=known_sha(state))
+                                                                    known_sha=known_sha(state), queue_hook=w.get("popular_line", ""))
                 else:
                     name, digest, why = fetch_url.fetch(w["url"], w["artist"], w["title"], out, cfg, rights="owner", known_sha=known_sha(state))
             except fetch_url.Duplicate as e:

@@ -133,7 +133,8 @@ def test_fetch_one_skips_audio_with_a_known_digest(tmp_path):
     assert list(out.iterdir()) == []
 
 
-def test_download_only_accepts_unknown_usage_rights_and_keeps_technical_checks(tmp_path):
+def test_download_only_accepts_unknown_usage_rights_and_keeps_technical_checks(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_songs.song_identity, "verify", lambda *args: "queue lyrics matched")
     cfg = {"licenses_allowed": ["by"], "sources": {"order": ["hitmo"]}}
     candidate = cand(lic="", source="hitmo")
     checked = []
@@ -152,6 +153,7 @@ def test_download_only_accepts_unknown_usage_rights_and_keeps_technical_checks(t
     side = json.loads((tmp_path / (name + ".license.json")).read_text(encoding="utf-8"))
     assert side["license"] == "" and side["usage_rights"] == "not_evaluated"
     assert side["download_only"] is True and side["analysis_only"] is True
+    assert side["identity"] == "queue lyrics matched"
     assert checked[0]["min_sec"] == 90 and side["sha256"] == fetch_songs.download.file_sha256(tmp_path / name)
 
 
@@ -178,7 +180,8 @@ def test_fetch_one_leaves_a_rate_limited_download_host_and_tries_another(tmp_pat
     assert name == "Tasso - Таю.mp3" and attempts == [urls[0], urls[2]]
 
 
-def test_all_catalogs_are_tried_before_the_next_song_and_blocked_source_is_not_hammered(tmp_path):
+def test_all_catalogs_are_tried_before_the_next_song_and_blocked_source_is_not_hammered(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_songs.song_identity, "verify", lambda *args: "LRCLIB lyrics matched")
     from pipeline import catalog_audio
     order = list(catalog_audio.SITES)
     cfg = {'licenses_allowed': ['by'], 'sources': {'order': order}}
