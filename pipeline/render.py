@@ -2,6 +2,7 @@
 (loudness-normalised, faded out). The picture is a pure function of the props (pipeline/widgets_plan.py); the audio never goes through Remotion.
 """
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,12 +22,45 @@ def npx():
     return shutil.which("npx") or shutil.which("npx.cmd") or "npx"
 
 
-def make_audio(src, start, length, out, cfg, fade=1.5):
-    af = f"apad=whole_dur={length},afade=t=out:st={max(0, length - fade):.2f}:d={fade},loudnorm=I={cfg['target_lufs']}:TP={cfg['max_true_peak'] - 1}:LRA=11,alimiter=limit=0.7:level=disabled"  # the AAC encode adds up to ~2 dB over loudnorm's ceiling on loud masters (+0.2 dBFS seen on a real track)
-    rc, log = _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start}", "-t", f"{length}", "-i", str(src), "-vn", "-af", af,
-                    "-ar", "48000", "-c:a", "aac", "-b:a", "192k", str(out)])
-    if rc:
-        raise RuntimeError("ffmpeg audio failed: " + log[-300:])
+def _ebu(args):
+    """ffmpeg ... ebur128=peak=true -> (integrated LUFS, true peak dBFS), None when unreadable (same reading as qa.loudness)."""
+    rc, log = _run(["ffmpeg", "-hide_banner", "-nostats", *args, "-f", "null", "-"])
+    tail = log[log.rfind("Summary:"):]
+    i, p = re.search(r"I:\s+(-?[\d.]+) LUFS", tail), re.search(r"Peak:\s+(-?[\d.]+) dBFS", tail)
+    return (float(i.group(1)), float(p.group(1))) if i and p and not rc else (None, None)
+
+
+def make_audio(src, start, length, out, cfg, fade=1.5, tries=4):
+    """Fragment -> AAC at the target loudness. Closed loop instead of one-pass loudnorm: gain = target - measured, a limiter holds the peaks, then the
+    ENCODED file is measured again (what QA measures): missing loudness is added as gain, a peak over the QA ceiling lowers the limiter. One-pass
+    loudnorm left dynamic tracks 3-4 LU under the target (-18 LUFS vs -14) because its true-peak ceiling stopped the gain."""
+    pre = f"apad=whole_dur={length},afade=t=out:st={max(0, length - fade):.2f}:d={fade}"
+    target, ceiling = cfg["target_lufs"], cfg["max_true_peak"] + 0.3  # the QA limits: |LUFS - target| <= 2.5, true peak <= ceiling
+    src_args = ["-ss", f"{start}", "-t", f"{length}", "-i", str(src), "-vn"]
+
+    def encode(gain, limit):
+        af = f"{pre},volume={gain:.2f}dB,alimiter=limit={limit:.3f}:level=disabled"
+        rc, log = _run(["ffmpeg", "-y", "-loglevel", "error", *src_args, "-af", af, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", str(out)])
+        if rc:
+            raise RuntimeError("ffmpeg audio failed: " + log[-300:])
+        return _ebu(["-i", str(out), "-af", "ebur128=peak=true"])
+
+    lufs, _ = _ebu([*src_args, "-af", f"{pre},ebur128=peak=true"])
+    gain, limit, best = (target - lufs) if lufs is not None else 0.0, 0.85, None  # 0.85 = -1.4 dBFS; the AAC encode may add a dB or two, the loop below checks it
+    for _ in range(tries):
+        got, peak = encode(gain, limit)
+        if got is None or peak is None:
+            return  # cannot measure: keep this encode, QA will judge it
+        ok = peak <= ceiling
+        if best is None or (ok, -abs(got - target)) > best[0]:
+            best = ((ok, -abs(got - target)), gain, limit)
+        if ok and abs(got - target) <= 1.0:
+            return
+        gain += target - got
+        if not ok:
+            limit *= 10 ** ((ceiling - peak - 0.3) / 20)
+    if (best[1], best[2]) != (gain, limit):  # the loop ended on a worse try than the best one: encode that one again
+        encode(best[1], best[2])
 
 
 def check_props(props):
