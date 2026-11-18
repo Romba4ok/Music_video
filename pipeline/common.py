@@ -8,6 +8,13 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def plain(o):
+    """json `default=`: numpy scalars (np.bool_, np.float32 ...) -> plain Python values; anything else is still an error."""
+    if hasattr(o, "item") and getattr(o, "shape", None) == ():
+        return o.item()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 class NeedsAuth(Exception):
     """A source works only with credentials/rights the owner has not provided."""
 

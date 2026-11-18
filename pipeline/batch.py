@@ -7,14 +7,16 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
+import traceback
 import zlib
 from pathlib import Path
 
 from . import analyze as analyze_mod
 from . import author as author_mod
 from . import build, download, sources
-from .common import ROOT, load_config, parse_name
+from .common import ROOT, load_config, parse_name, plain
 from .qa import METAPHORS, PALETTES
 
 METAPHOR_ORDER = ["inner", "loneliness", "breakup", "love", "nostalgia", "time", "money"]
@@ -133,7 +135,7 @@ def remember_cards(acc, date, song, spec):
            "hook_question": str(spec.get("hook", "")).strip().endswith("?"), "renderer": "remotion"}
     Path(acc).mkdir(parents=True, exist_ok=True)
     with open(Path(acc) / CARDS_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.write(json.dumps(rec, ensure_ascii=False, default=plain) + "\n")
 
 
 def fetch_audio(entry, cfg, mode):
@@ -213,13 +215,13 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             if fr and fr.get("low_ratio", 0) > cfg["whisper"].get("max_low_ratio", 0.15):  # no window with reliably recognised words: do not render guesses
                 rec["stages"]["analyze"] = "low_confidence"
                 rec["note"] = f'{fr["low_ratio"]:.0%} of the words in the best window are low-confidence (limit {cfg["whisper"].get("max_low_ratio", 0.15):.0%}); not rendered'
-                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
+                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False, default=plain), encoding="utf-8")
                 report.append(rec)
                 continue
             if fr and "end_kind" in fr and fr["end_kind"] is None and not fr.get("pinned"):  # the end is not a finished thought: say so, never silently
                 rec["note"] = "the fragment does not end on a finished thought (no closing line within reach)"
             if not analysis.get("fragment"):
-                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
+                (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False, default=plain), encoding="utf-8")
                 report.append(rec)
                 continue
             rel = str(Path(audio).resolve().relative_to(root)).replace("\\", "/") if mode == "auto" else None
@@ -229,8 +231,8 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
             if rec["stages"]["author"].startswith("fallback"):  # keyword cards look alike: never let that pass unnoticed
                 rec["note"] = "Claude author failed, this video uses keyword cards: " + rec["stages"]["author"]
             themes.append(spec.get("theme", "light"))
-            (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
-            (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
+            (out / f"analysis-{n}.json").write_text(json.dumps(analysis, ensure_ascii=False, default=plain), encoding="utf-8")
+            (out / f"spec-{n}.json").write_text(json.dumps(spec, ensure_ascii=False, default=plain, indent=1), encoding="utf-8")
             if spec.get("scenario"):  # the card script the video is built from, readable without opening the spec
                 (out / f"scenario-{n}.txt").write_text(author_mod.render_scenario(spec["scenario"]), encoding="utf-8")
             sid, lines, video = st["build"](out, n, cfg)
@@ -243,10 +245,12 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
                 recent.append((spec["metaphor"], spec["palette"]))
         except Exception as e:  # one song must never stop the batch
             rec["stages"]["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            rec["traceback"] = traceback.format_exc()[-1500:]  # the report said only the message: the failing line was invisible in the log
+            print("ERROR", rec["song"], traceback.format_exc(), file=sys.stderr, flush=True)
         report.append(rec)
     summary = {"mode": mode, "date": date, "requested": count, "succeeded": done, "songs": report,
                "queue_left": max(0, len(queue) - len(report))}
-    (out / "report.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "report.json").write_text(json.dumps(summary, ensure_ascii=False, default=plain, indent=1), encoding="utf-8")
     return summary
 
 
@@ -260,7 +264,7 @@ def main(argv):
     a = ap.parse_args(argv)
     s = run_batch(a.mode, a.count, a.date, lang=a.lang)
     s["status"] = batch_status(s)
-    print(json.dumps({k: v for k, v in s.items() if k != "songs"}, ensure_ascii=False))
+    print(json.dumps({k: v for k, v in s.items() if k != "songs"}, ensure_ascii=False, default=plain))
     for r in s["songs"]:
         print(r["song"], r["stages"], *(r.get("qa") or []), sep=" | ")
     return 1 if s["status"] == "failed" else 0  # no_audio is a normal day (the daily search has not found a licensed file yet), not a failed workflow

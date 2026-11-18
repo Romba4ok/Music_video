@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from . import widgets_plan
-from .common import ROOT
+from .common import ROOT, plain
 
 REMOTION = ROOT / "remotion"
 
@@ -91,7 +91,7 @@ def render(spec, plan, workdir, cfg, audio_src=None):
     if errs:
         raise RuntimeError("props check failed: " + "; ".join(errs))
     pj = wd / "props.json"
-    pj.write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
+    pj.write_text(json.dumps(props, ensure_ascii=False, default=plain), encoding="utf-8")
     silent = wd / "silent.mp4"
     rc, log = _run([npx(), "remotion", "render", "src/index.ts", "Widgets", str(silent), f"--props={pj}", "--codec=h264", "--crf=18"], cwd=REMOTION)
     if rc or not silent.exists():
