@@ -314,6 +314,46 @@ def test_download_only_does_not_request_chart_when_existing_queue_fills_target(t
     assert not (tmp_path / 'queue-next.md').exists()
 
 
+def test_exhausted_queue_and_duplicate_chart_continue_into_two_storefronts(tmp_path, monkeypatch, capsys):
+    titles = [f"Песня {i}" for i in range(40)]
+    args = run_args(tmp_path, "".join(f"А | {title} | |\n" for title in titles), download_only=True)
+    args.max, args.tries = 3, None
+    calls = []
+
+    def apple(country):
+        calls.append(country)
+        tracks = ["Новая KZ", "Пропуск"] if country == "kz" else ["Новая KZ", "Новая RU", "Новая RU два", "Лишняя"]
+        return [{"artist": "А", "title": title} for title in tracks]
+
+    def fetch(w, *unused, **kwargs):
+        calls.append(w["title"])
+        return (w["title"] + ".mp3", "verified") if w["title"].startswith("Новая") else (None, "no match")
+
+    monkeypatch.setattr(fetch_songs, "_apple_chart", apple)
+    monkeypatch.setattr(fetch_songs, "fetch_one", fetch)
+    def primary(cfg):
+        calls.append("primary")
+        return [{"title": "А - Песня 0"}]
+
+    assert fetch_songs.run(args, fetch_chart=primary, sleep=lambda _: None) == [
+        "Новая KZ.mp3", "Новая RU.mp3", "Новая RU два.mp3"]
+    assert calls == titles + ["primary", "kz", "Новая KZ", "Пропуск", "ru", "Новая RU", "Новая RU два"]
+    report = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert [c["new_tracks"] for c in report["charts"]] == [0, 2, 3]
+    assert len(fetch_songs.parse_queue((tmp_path / "queue-next.md").read_text(encoding="utf-8"))) == 45
+
+
+def test_failed_and_empty_charts_stop_without_looping(tmp_path, monkeypatch, capsys):
+    args = run_args(tmp_path, "", download_only=True)
+    def unavailable(_):
+        raise requests.Timeout()
+    monkeypatch.setattr(fetch_songs, "_apple_chart", lambda country: unavailable(country) if country == "kz" else [])
+    assert not fetch_songs.run(args, fetch_chart=unavailable, sleep=lambda _: None)
+    report = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert [c["chart"] for c in report["charts"]] == ["primary", "Apple Music KZ", "Apple Music RU"]
+    assert not report["queue_update_file"] and report["checked"] == 0
+
+
 def test_zero_missing_audio_does_not_request_catalogs_or_chart(tmp_path, monkeypatch):
     args = run_args(tmp_path, '', download_only=True)
     args.max = 0

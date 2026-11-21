@@ -106,7 +106,7 @@ def wanted(cfg, queue_text="", fetch_chart=None, taste=frozenset()):
         rows = []
     own, other = [], []
     for r in rows:
-        a, t = parse_name(r["title"])
+        a, t = (r["artist"].strip(), r["title"].strip()) if r.get("artist") else parse_name(r["title"])
         if a and t and fits(a, t, taste):
             (own if re.sub(r"[\W_]+", "", a.lower()) in taste else other).append({"artist": a, "title": t, "sec": r.get("sec", 0)})
     out += own + other
@@ -123,6 +123,19 @@ def _chart(cfg):
     if k:
         return song_ideas.pick(song_ideas.fetch(cfg.get("trends", {}).get("region", "KZ"), k), top=50)
     return song_ideas.fetch_deezer()
+
+
+def _apple_chart(country):
+    """Apple Music charts supply track names only. Audio still goes through fetch_one."""
+    data = sources.get_json(f"https://rss.marketingtools.apple.com/api/v2/{country}/music/most-played/100/songs.json",
+                            timeout=10, retries=1)
+    return [{"artist": row["artistName"], "title": row["name"]} for row in data["feed"]["results"]
+            if isinstance(row.get("artistName"), str) and isinstance(row.get("name"), str)]
+
+
+def _fallback_charts():
+    return [("Apple Music KZ", lambda cfg: _apple_chart("kz")),
+            ("Apple Music RU", lambda cfg: _apple_chart("ru"))]
 
 
 def to_mp3(src, dst):
@@ -391,6 +404,8 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
     skipped_known, chart_checked, queue_added = 0, not download_only, []
+    charts = iter([("primary", fetch_chart or _chart), *_fallback_charts()]) if download_only else iter(())
+    chart_log = []
     queue_update = None
 
     def enqueue(items):
@@ -406,13 +421,15 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             else:
                 blocked += 1
 
-    def refill_from_chart():
+    def refill_from_chart(label, loader):
         nonlocal chart_checked, queue_update
         chart_checked = True
         seen = {key(w['artist'], w['title']) for w in cands} | set(have) | set(state['done'])
-        fresh = [w for w in wanted(cfg, '', fetch_chart, taste) if key(w['artist'], w['title']) not in seen]
+        fresh = [w for w in wanted(cfg, '', loader, taste) if key(w['artist'], w['title']) not in seen]
         cands.extend(fresh)
         enqueue(fresh)
+        chart_log.append({"chart": label, "new_tracks": len(fresh)})
+        print(f"songs: {label}: {len(fresh)} new chart tracks", file=sys.stderr, flush=True)
         if fresh:
             cell = lambda value: ' '.join(value.replace('|', '/').split())
             # Keep the explicit file field so the existing consumer applies its
@@ -426,12 +443,21 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             queue_update.write_text(qtext.rstrip() + '\n\n' + '\n'.join(queue_added) + '\n', encoding='utf-8')
 
     enqueue(cands)
-    if download_only and not pending and a.max > 0 and a.tries > 0:
-        refill_from_chart()
+    if download_only:
+        # On the next runner, start with untried queue rows before repeating temporary failures.
+        pending.sort(key=lambda item: (item[2] is not None, (item[2] or {}).get("date", "")))
+    # Leave time for the workflow's Drive upload before the 30-minute runner timeout.
+    deadline = time.monotonic() + 20 * 60 if download_only else float("inf")
+    try_limit = a.tries if a.tries is not None else (float("inf") if download_only else 40)
     done_n = 0
-    for w, k, sk in pending:
-        if len(got) >= a.max or tries >= a.tries:
-            break
+    while len(got) < a.max and tries < try_limit and time.monotonic() < deadline:
+        if done_n == len(pending):
+            chart = next(charts, None)
+            if chart is None:
+                break
+            refill_from_chart(*chart)
+            continue
+        w, k, sk = pending[done_n]
         done_n += 1
         want_preview = a.previews and k in qkeys
         known_none = bool(sk and not needs_recheck(sk, sig, today, a.force_retry))
@@ -486,8 +512,6 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             for s, st in re.findall(r"([\w-]+):(empty|needs_auth|unavailable|refused|ok)\b", why):
                 src_states[f"{s}:{st}"] = src_states.get(f"{s}:{st}", 0) + 1
         sleep(1)  # be polite to the free APIs
-        if download_only and not chart_checked and done_n == len(pending) and len(got) < a.max and tries < a.tries:
-            refill_from_chart()
     if a.discover and len(got) < a.max:
         seen = set(have) | set(state["done"]) | set(state["skipped"])
         for w, name, why in discover(cfg, out, seen, a.max - len(got), find, sleep):
@@ -501,7 +525,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         official.save_links(state_f.with_name("song-links.md"), links, today)
     report = {"download_only": download_only, "usage_rights": "not_evaluated" if download_only else "policy_checked",
               "configured_sources": cfg.get('sources', {}).get('order', []),
-              "skipped_known": skipped_known, "chart_checked": chart_checked,
+              "skipped_known": skipped_known, "chart_checked": chart_checked, "charts": chart_log,
               "queue_added": queue_added, "queue_update_file": str(queue_update) if queue_update else None,
               "songs": per_song,"candidates": len(cands), "eligible": len(pending) + blocked, "blocked_recent": blocked, "rechecked_skipped": retried, "checked": tries,
               "left_unchecked": len(pending) - done_n, "downloaded": got, "skipped_total": len(state["skipped"]),
@@ -524,7 +548,7 @@ def main(argv):
     ap.add_argument("--record-used", help="text file of processed audio names (Drive/done): only add them to the memory as `used`, search nothing")
     ap.add_argument("--queue", default=str(ROOT / "accounts" / "main" / "queue.md"))
     ap.add_argument("--max", type=int, default=5, help="max new songs per run")
-    ap.add_argument("--tries", type=int, default=40, help="max songs searched per run")
+    ap.add_argument("--tries", type=int, help="max songs searched per run (default: 40 outside download-only)")
     a = ap.parse_args(argv)
     if a.check_list:
         q = Path(a.queue)
