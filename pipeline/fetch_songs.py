@@ -360,7 +360,8 @@ def needs_recheck(sk, sig, today, force=False):
     return age >= RETRY_DAYS * 86400
 
 
-def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None, official_try=None):
+def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=None, preview_find=None, official_try=None,
+        *, replacement_attempts=None, stop_at=None):
     cfg = cfg or load_config()
     download_only = getattr(a, "download_only", False)
     if download_only:
@@ -404,7 +405,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     links, per_song = [], []  # links: (song, page, note) found by the official stage; per_song: one report row per checked song
     pending = []  # (wanted song, key, previous skipped row or None)
     skipped_known, chart_checked, queue_added = 0, not download_only, []
-    charts = iter([("primary", fetch_chart or _chart), *_fallback_charts()]) if download_only else iter(())
+    charts = iter([("primary", fetch_chart or _chart), *_fallback_charts()]) if download_only and replacement_attempts is None else iter(())
     chart_log = []
     queue_update = None
 
@@ -412,7 +413,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
         nonlocal blocked, skipped_known
         for w in items:
             k = key(w['artist'], w['title'])
-            if k in have or k in state['done']:
+            if k in have or k in state['done'] or (replacement_attempts is not None and k in replacement_attempts):
                 skipped_known += 1
                 continue
             sk = state['skipped'].get(k)
@@ -443,11 +444,13 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             queue_update.write_text(qtext.rstrip() + '\n\n' + '\n'.join(queue_added) + '\n', encoding='utf-8')
 
     enqueue(cands)
-    if download_only:
+    if download_only and replacement_attempts is None:
         # On the next runner, start with untried queue rows before repeating temporary failures.
         pending.sort(key=lambda item: (item[2] is not None, (item[2] or {}).get("date", "")))
     # Leave time for the workflow's Drive upload before the 30-minute runner timeout.
     deadline = time.monotonic() + 20 * 60 if download_only else float("inf")
+    if stop_at is not None:  # Replacement searches share the generate job's remaining budget.
+        deadline = stop_at
     try_limit = a.tries if a.tries is not None else (float("inf") if download_only else 40)
     done_n = 0
     while len(got) < a.max and tries < try_limit and time.monotonic() < deadline:
@@ -459,6 +462,8 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             continue
         w, k, sk = pending[done_n]
         done_n += 1
+        if replacement_attempts is not None:
+            replacement_attempts.add(k)
         want_preview = a.previews and k in qkeys
         known_none = bool(sk and not needs_recheck(sk, sig, today, a.force_retry))
         tries += 1
@@ -534,7 +539,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     return got
 
 
-def main(argv):
+def arguments(argv):
     ap = argparse.ArgumentParser(prog="pipeline songs")
     ap.add_argument("--out", default="out/fetched")
     ap.add_argument("--download-only", action="store_true", help="queue/chart to public Hitmo/Sefon downloads with technical checks, without evaluating usage rights")
@@ -549,7 +554,11 @@ def main(argv):
     ap.add_argument("--queue", default=str(ROOT / "accounts" / "main" / "queue.md"))
     ap.add_argument("--max", type=int, default=5, help="max new songs per run")
     ap.add_argument("--tries", type=int, help="max songs searched per run (default: 40 outside download-only)")
-    a = ap.parse_args(argv)
+    return ap.parse_args(argv)
+
+
+def main(argv):
+    a = arguments(argv)
     if a.check_list:
         q = Path(a.queue)
         bad = off_list(a.check_list, q.read_text(encoding="utf-8") if q.exists() else "")

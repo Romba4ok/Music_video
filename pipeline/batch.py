@@ -168,7 +168,7 @@ def _declared(ad, name):
     return os.environ.get("VYBEX_OWNER_DECLARES_RIGHTS") == "1" or (f.exists() and name in json.loads(f.read_text(encoding="utf-8")))
 
 
-def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, trend_tags=()):
+def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, trend_tags=(), *, replace_audio=None):
     cfg = dict(cfg or load_config())
     if lang:
         cfg["language"] = lang
@@ -183,7 +183,28 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
     past = recall_cards(acc)  # earlier runs count too: the same recipe on the next day looks the same
     report, done = [], 0
     themes = [r.get("theme", "light") for r in past]
-    for entry in queue:
+    attempted_audio = set(used)
+    refill_stop = None
+
+    def inputs():
+        nonlocal refill_stop
+        yield from queue
+        if mode != "auto" or replace_audio is None or not any(r["stages"].get("analyze") == "low_confidence" for r in report):
+            return
+        while done < count:
+            try:
+                extra = replace_audio(count - done, attempted_audio)
+            except Exception as exc:
+                refill_stop = f"audio replacement failed: {type(exc).__name__}: {exc}"
+                print(refill_stop, file=sys.stderr, flush=True)
+                return
+            if not extra:
+                refill_stop = "no further suitable audio found in the queue within the search time"
+                print(refill_stop, file=sys.stderr, flush=True)
+                return
+            yield from extra
+
+    for entry in inputs():
         if done >= count:
             break
         if (entry["artist"].lower(), entry["title"].lower()) in used:
@@ -199,6 +220,7 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
                 report.append(rec)
                 continue
             rec["stages"]["fetch"] = "ok"
+            attempted_audio.add((entry["artist"], entry["title"]))
             rec["audio_name"] = Path(audio).name
             try:  # a broken file must not reach whisper (minutes of CPU) or stop the other songs
                 audio, notes = st["check_audio"](audio, cfg["min_len"])
@@ -250,6 +272,8 @@ def run_batch(mode, count, date, cfg=None, lang=None, root=ROOT, stages=None, tr
         report.append(rec)
     summary = {"mode": mode, "date": date, "requested": count, "succeeded": done, "songs": report,
                "queue_left": max(0, len(queue) - len(report))}
+    if refill_stop:
+        summary["replacement_stop"] = refill_stop
     (out / "report.json").write_text(json.dumps(summary, ensure_ascii=False, default=plain, indent=1), encoding="utf-8")
     return summary
 
@@ -262,7 +286,11 @@ def main(argv):
     ap.add_argument("--date", default=time.strftime("%Y-%m-%d", time.gmtime()))
     ap.add_argument("--lang")
     a = ap.parse_args(argv)
-    s = run_batch(a.mode, a.count, a.date, lang=a.lang)
+    replace_audio = None
+    if a.mode == "auto" and os.environ.get("VYBEX_REPLACE_LOW_CONFIDENCE") == "1":
+        from .audio_replacements import DriveReplacements
+        replace_audio = DriveReplacements(ROOT, load_config())
+    s = run_batch(a.mode, a.count, a.date, lang=a.lang, replace_audio=replace_audio)
     s["status"] = batch_status(s)
     print(json.dumps({k: v for k, v in s.items() if k != "songs"}, ensure_ascii=False, default=plain))
     for r in s["songs"]:
