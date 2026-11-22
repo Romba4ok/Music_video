@@ -12,7 +12,7 @@ def inventory(listing, metadata_dir):
     names = [entry["Name"] for entry in listing if not entry.get("IsDir")]
     listed = set(names)
     local = {p.name: p for p in metadata_dir.glob("*.license.json")}
-    total = ready = analysis = unknown = owner_files = 0
+    total = ready = analysis = unknown = owner_files = declared_downloads = 0
     for name in names:
         if Path(name).suffix.lower() not in AUDIO_EXT:
             continue
@@ -29,12 +29,20 @@ def inventory(listing, metadata_dir):
             continue
         if not isinstance(meta, dict) or not isinstance(meta.get("analysis_only", False), bool):
             unknown += 1
+        elif meta.get("analysis_only") and not isinstance(meta.get("download_only", False), bool):
+            unknown += 1
+        elif meta.get("analysis_only") and meta.get("download_only"):
+            # This report describes Drive inputs to generate.yml, which sets
+            # VYBEX_OWNER_DECLARES_RIGHTS=1 even when fetch-songs runs on its own.
+            declared_downloads += 1
+            ready += 1
         elif meta.get("analysis_only"):
             analysis += 1
         else:
             ready += 1
     return (f"Файлов в Drive/audio: **{total}**. Допущено по метаданным для AUTO: **{ready}** "
-            f"(включая {owner_files} без .license.json по декларации владельца). "
+            f"(по декларации владельца в generate: без .license.json — {owner_files}, "
+            f"полные треки с download_only — {declared_downloads}). "
             f"Только для анализа: {analysis}. Метаданные не удалось проверить: {unknown}.")
 
 
