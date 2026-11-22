@@ -1,194 +1,166 @@
-name: generate
-# Google Drive in/out. UNTESTED on GitHub Actions (cannot be run locally): first run via "Run workflow", read the log, then rely on cron.
-# Drive folder (its ID = secret GDRIVE_FOLDER_ID):  audio/ (you drop songs)  ready/<date>/ (results)  done/ (processed songs)  queue.txt (optional)
-# No "push" trigger: a code push must never generate videos or put posts into the TikTok queue.
-# Song search is a SEPARATE daily workflow (fetch-songs.yml, own schedule). This one only generates: the light job `check` counts the audio files in Drive;
-# with none, the heavy job (Node, Remotion, Whisper, Claude, render) is not started at all and the run ends green with status no_audio.
-on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: auto (mp4 with sound) or tiktok (silent mp4 + sync file)
-        default: auto
-      count:
-        description: how many videos (scheduled runs use repo variable VYBEX_POSTS_PER_DAY, default 3)
-        default: ""
-      search:
-        description: "true = run the song search (fetch-songs) first, then generate. Default false: the daily fetch-songs run does the search"
-        default: "false"
-      buffer:
-        description: "Buffer mode for this run only: plan (checks, creates nothing) | draft | queue | now (publish immediately) | off. Empty = repo variable VYBEX_BUFFER, else now"
-        default: ""
-# Two triggers can fire on the same morning (GitHub cron + an external pinger via workflow_dispatch): never run two at once, the second waits.
-concurrency:
-  group: generate
-  cancel-in-progress: false
-env:
-  HYPERFRAMES_NO_UPDATE_CHECK: "1"
-  HYPERFRAMES_SKIP_SKILLS: "1"
-  RCLONE_CONFIG_GD_TYPE: drive
-  RCLONE_CONFIG_GD_SCOPE: drive
-  RCLONE_CONFIG_GD_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-  RCLONE_CONFIG_GD_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
-  RCLONE_CONFIG_GD_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-  VYBEX_OWNER_DECLARES_RIGHTS: "1"  # files you put in Drive/audio = your declaration that you may use them
+name: API credential check
+on: workflow_dispatch
+permissions: {}
 jobs:
-  search:   # optional: only when started with search=true
-    if: ${{ github.event.inputs.search == 'true' }}
-    uses: ./.github/workflows/fetch-songs.yml
-    with:
-      target: "3"
-    secrets: inherit
-  check:    # light: no ffmpeg/Node/Whisper. Counts the audio files in Drive/audio without downloading them and runs the list guard on their names.
-    needs: search
-    if: ${{ !cancelled() }}
+  drive:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      audio: ${{ steps.n.outputs.audio }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12", cache: pip }
-      - run: sudo apt-get update && sudo apt-get install -y rclone && pip install requests
-      - name: Drive token
+      - name: Check drive
         env:
-          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        shell: python
         run: |
-          echo "::add-mask::$RT"
-          python -c "import json,os;print('RCLONE_CONFIG_GD_TOKEN='+json.dumps({'access_token':'','token_type':'Bearer','refresh_token':os.environ['RT'],'expiry':'2000-01-01T00:00:00Z'}))" >> "$GITHUB_ENV"
-      - name: Count audio files in Drive/audio
-        id: n
-        shell: bash
-        run: |
-          rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
-          rclone lsf gd:audio | grep -v '/$' | grep -v '\.license\.json$' > out-audio.txt || true
-          N=$(grep -ciE '\.(mp3|wav|m4a|ogg|flac|mp4|mov|mkv|webm|m4v)$' out-audio.txt || true)
-          MIN=${{ vars.VYBEX_MIN_AUDIO || '3' }}   # generate starts only when Drive/audio holds at least this many songs (repo variable VYBEX_MIN_AUDIO, default 3)
-          if [ "$N" != "0" ] && [ "$N" -lt "$MIN" ]; then echo "status: waiting - $N audio file(s) in Drive/audio, need $MIN to start (nothing generated, files stay in place)" | tee -a "$GITHUB_STEP_SUMMARY"; N=0; fi
-          echo "audio=$N" >> "$GITHUB_OUTPUT"
-          if [ "$N" = "0" ]; then echo "status: no_audio - not enough songs in Drive/audio, nothing to generate (the heavy job is skipped; the daily fetch-songs run fills the folder)" | tee -a "$GITHUB_STEP_SUMMARY"
-          else { echo "Audio files in Drive/audio: $N"; sed 's/^/- /' out-audio.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi
-  generate:
-    needs: check
-    if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.audio != '0' }}
-    concurrency:   # shares the queue with fetch-songs / selftest: they never write Drive/audio and Drive/state at the same time
-      group: vybex-drive
-      cancel-in-progress: false
+          import os, json, base64
+          from urllib.parse import quote, urlencode
+          from urllib.request import Request, build_opener, HTTPRedirectHandler
+          from urllib.error import HTTPError
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, *args): return None
+          def call(url, data=None, headers=None):
+              try:
+                  with build_opener(NoRedirect()).open(Request(url, data=data, headers=headers or {}), timeout=25) as r:
+                      print("HTTP", r.status, flush=True)
+                      return json.load(r)
+              except HTTPError as e:
+                  raise SystemExit("HTTP " + str(e.code)) from None
+              except Exception as e:
+                  raise SystemExit(type(e).__name__) from None
+          def env(k):
+              if not os.getenv(k): raise SystemExit("Missing " + k)
+              return os.environ[k]
+          form = urlencode({"grant_type":"refresh_token","refresh_token":env("GDRIVE_REFRESH_TOKEN"),"client_id":env("GDRIVE_CLIENT_ID"),"client_secret":env("GDRIVE_CLIENT_SECRET")}).encode()
+          token = call("https://oauth2.googleapis.com/token", form)["access_token"]
+          folder = quote(env("GDRIVE_FOLDER_ID"), safe="")
+          meta = call("https://www.googleapis.com/drive/v3/files/"+folder+"?fields=mimeType,trashed&supportsAllDrives=true", headers={"Authorization":"Bearer "+token})
+          assert meta.get("mimeType") == "application/vnd.google-apps.folder" and meta.get("trashed") is False
+          print("PASS: Drive folder accessible")
+  buffer:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "22" }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12", cache: pip }
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg rclone
-      - run: pip install -r requirements.txt
-      - run: sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libgbm-dev libasound2t64 libxrandr2 libxkbcommon-dev libxfixes3 libxcomposite1 libxdamage1 libatk-bridge2.0-0 libpango-1.0-0 libcairo2 libcups2
-      - run: npm ci
-        working-directory: remotion
-      - run: npx remotion browser ensure
-        working-directory: remotion
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: whisper-small-large-v3  # small finds the window, large-v3 re-reads only that window
-      - name: Drive token
-        env:
-          RT: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
-        run: |
-          echo "::add-mask::$RT"
-          python -c "import json,os;print('RCLONE_CONFIG_GD_TOKEN='+json.dumps({'access_token':'','token_type':'Bearer','refresh_token':os.environ['RT'],'expiry':'2000-01-01T00:00:00Z'}))" >> "$GITHUB_ENV"
-      - name: Pull songs from Drive
-        run: |
-          mkdir -p accounts/main/audio
-          rclone copy gd:audio accounts/main/audio --progress=false
-          rclone copyto gd:queue.txt accounts/main/queue.md 2>/dev/null || echo "no queue.txt (fine)"
-          ls accounts/main/audio
-      - name: Claude CLI (optional - writes the cards, hook and notifications)
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then npm install -g @anthropic-ai/claude-code && claude --version
-          else echo "no CLAUDE_CODE_OAUTH_TOKEN secret: cards are picked by keywords (see docs/claude-author.md)"; fi
-      - name: Batch
-        id: batch
-        env:
-          VYBEX_REPLACE_LOW_CONFIDENCE: "1"
-          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: python -m pipeline batch --mode "${{ github.event.inputs.mode || vars.VYBEX_MODE || 'auto' }}" --count "${{ github.event.inputs.count || vars.VYBEX_POSTS_PER_DAY || '3' }}" --date "$(date -u +%F)"
-      - name: "Buffer - 3 posts a day into the TikTok queue (mode = input, else variable VYBEX_BUFFER, else now)"
-        if: always()
-        shell: bash   # bash -e -o pipefail: a failed rclone/python must stop the step, nothing is swallowed
+      - name: Check buffer
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
-          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+        shell: python
+        run: |
+          import os, json, base64
+          from urllib.parse import quote, urlencode
+          from urllib.request import Request, build_opener, HTTPRedirectHandler
+          from urllib.error import HTTPError
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, *args): return None
+          def call(url, data=None, headers=None):
+              try:
+                  with build_opener(NoRedirect()).open(Request(url, data=data, headers=headers or {}), timeout=25) as r:
+                      print("HTTP", r.status, flush=True)
+                      return json.load(r)
+              except HTTPError as e:
+                  raise SystemExit("HTTP " + str(e.code)) from None
+              except Exception as e:
+                  raise SystemExit(type(e).__name__) from None
+          def env(k):
+              if not os.getenv(k): raise SystemExit("Missing " + k)
+              return os.environ[k]
+          def query(q, variables):
+              payload = json.dumps({"query":q,"variables":variables}).encode()
+              response = call("https://api.buffer.com", payload, {"Authorization":"Bearer "+env("BUFFER_API_KEY"),"Content-Type":"application/json"})
+              if response.get("errors"): raise SystemExit("GraphQL request rejected")
+              return response["data"]
+          orgs = query("query { account { organizations { id } } }", {})["account"]["organizations"]
+          channels = [c for o in orgs for c in query("query($o: OrganizationId!) { channels(input:{organizationId:$o}) { service isDisconnected isLocked isQueuePaused } }", {"o":o["id"]})["channels"] if c.get("service","").lower()=="tiktok"]
+          assert channels, "no TikTok channel"
+          usable = sum(not c.get("isDisconnected") and not c.get("isLocked") for c in channels)
+          print("TikTok channels:",len(channels),"connected and unlocked:",usable)
+          assert usable, "channel disconnected or locked"
+          print("PASS: Buffer account and TikTok channel accessible")
+  cloudinary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check cloudinary
+        env:
           CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
           CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
-          VYBEX_BUFFER: ${{ github.event.inputs.buffer || vars.VYBEX_BUFFER || 'now' }}
-          VYBEX_POSTS_PER_DAY: ${{ vars.VYBEX_POSTS_PER_DAY || '3' }}
-          VYBEX_TIMEZONE: ${{ vars.VYBEX_TIMEZONE || 'Asia/Almaty' }}
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+        shell: python
         run: |
-          D=$(date -u +%F)
-          # state lives in Drive/state/buffer.json; "first run" is accepted only when the folder/file really is absent, a Drive error stops the step
-          ROOT_LS=$(rclone lsf gd:)
-          if echo "$ROOT_LS" | grep -qx 'state/' && rclone lsf gd:state | grep -qx 'buffer.json'; then
-            rclone copyto gd:state/buffer.json out/buffer-state.json
-          else
-            echo "no buffer state yet (first run)"
-          fi
-          # every command's exit code is logged on its own line; the step ends red if ANY of them was not 0 (nothing is forced to 0)
-          rc=0; rc_publish=skipped; rc_cleanup=skipped; rc_state=skipped
-          if [ -f out/$D/report.json ]; then python -m pipeline buffer publish out/$D --state out/buffer-state.json && rc_publish=0 || rc_publish=$?
-          else echo "no report.json (the Batch step failed or did not run): nothing to send today"; fi
-          echo "exit code: buffer publish = $rc_publish"
-          # videos that Buffer has really SENT to TikTok are deleted from Drive (ready/<date>/ files, trash-bin, recoverable ~30 days); drafts and hand-posted ones stay
-          if [ -f out/buffer-state.json ]; then
-            python -m pipeline buffer drive-cleanup --state out/buffer-state.json | tee -a "$GITHUB_STEP_SUMMARY" && rc_cleanup=0 || rc_cleanup=$?
-          fi
-          echo "exit code: buffer drive-cleanup = $rc_cleanup"
-          # saved even when something failed, so the next run does not post the same videos again
-          if [ -f out/buffer-state.json ]; then rclone copyto out/buffer-state.json gd:state/buffer.json && rc_state=0 || rc_state=$?; fi
-          echo "exit code: rclone copyto buffer-state.json -> Drive = $rc_state"
-          for v in "$rc_publish" "$rc_cleanup" "$rc_state"; do
-            if [ "$v" != "0" ] && [ "$v" != "skipped" ] && [ "$rc" = "0" ]; then rc=$v; fi
-          done
-          [ "$rc" = "0" ] || echo "::error::Buffer step failed: publish=$rc_publish drive-cleanup=$rc_cleanup state-upload=$rc_state (see the 'buffer: FAILED' lines above)"
-          python -m pipeline.audio_replacements --verify "out/$D/report.json" || rc=1
-          exit $rc
-      - name: "Song ideas -> Drive/ideas.md (optional: a failure here must not fail the video job)"
-        if: always()
-        continue-on-error: true
+          import os, json, base64
+          from urllib.parse import quote, urlencode
+          from urllib.request import Request, build_opener, HTTPRedirectHandler
+          from urllib.error import HTTPError
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, *args): return None
+          def call(url, data=None, headers=None):
+              try:
+                  with build_opener(NoRedirect()).open(Request(url, data=data, headers=headers or {}), timeout=25) as r:
+                      print("HTTP", r.status, flush=True)
+                      return json.load(r)
+              except HTTPError as e:
+                  raise SystemExit("HTTP " + str(e.code)) from None
+              except Exception as e:
+                  raise SystemExit(type(e).__name__) from None
+          def env(k):
+              if not os.getenv(k): raise SystemExit("Missing " + k)
+              return os.environ[k]
+          auth = base64.b64encode((env("CLOUDINARY_API_KEY")+":"+env("CLOUDINARY_API_SECRET")).encode()).decode()
+          data = call("https://api.cloudinary.com/v1_1/"+quote(env("CLOUDINARY_CLOUD_NAME"),safe="")+"/ping", headers={"Authorization":"Basic "+auth})
+          assert data.get("status") == "ok"
+          print("PASS: authenticated Cloudinary ping")
+  jamendo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check jamendo
         env:
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
+        shell: python
         run: |
-          { rclone lsf gd:audio; rclone lsf gd:done; } > out/have.txt
-          python -m pipeline ideas --have-file out/have.txt -o out/ideas.md
-          rclone copyto out/ideas.md gd:ideas.md
-      - name: Push results to Drive and mark songs done
-        if: always()
+          import os, json, base64
+          from urllib.parse import quote, urlencode
+          from urllib.request import Request, build_opener, HTTPRedirectHandler
+          from urllib.error import HTTPError
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, *args): return None
+          def call(url, data=None, headers=None):
+              try:
+                  with build_opener(NoRedirect()).open(Request(url, data=data, headers=headers or {}), timeout=25) as r:
+                      print("HTTP", r.status, flush=True)
+                      return json.load(r)
+              except HTTPError as e:
+                  raise SystemExit("HTTP " + str(e.code)) from None
+              except Exception as e:
+                  raise SystemExit(type(e).__name__) from None
+          def env(k):
+              if not os.getenv(k): raise SystemExit("Missing " + k)
+              return os.environ[k]
+          data = call("https://api.jamendo.com/v3.0/tracks/?"+urlencode({"client_id":env("JAMENDO_CLIENT_ID"),"format":"json","limit":1,"search":"piano","audiodlformat":"mp32"}))
+          head = data.get("headers",{})
+          code = str(head.get("code",""))
+          print("Jamendo application code:",code if code.isdecimal() else "unknown")
+          assert head.get("status") == "success" and isinstance(data.get("results"),list), "Jamendo search rejected"
+          print("PASS: authenticated search, tracks returned:",len(data["results"]))
+  claude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install project CLI
+        run: npm install --global @anthropic-ai/claude-code --silent
+      - name: Check claude
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          D=$(date -u +%F)
-          [ -d out/$D/ready ] && rclone copy out/$D/ready gd:ready/$D
-          [ -f out/$D/report.json ] && rclone copyto out/$D/report.json gd:ready/$D/report.json
-          [ -f out/$D/report.json ] && jq -r '.songs[]|select(.stages.render=="ok")|.audio_name' out/$D/report.json | while read -r f; do
-            [ -z "$f" ] && continue
-            if rclone lsf gd:audio | grep -qxF "$f"; then rclone moveto "gd:audio/$f" "gd:done/$f"
-            elif [ -f "accounts/main/audio/$f" ]; then rclone copyto "accounts/main/audio/$f" "gd:done/$f"   # the song came from the repo / was fetched inside this job: it is still remembered as processed
-            fi
-          done
-          [ -f out/$D/report.json ] && jq -r '.songs[]|"- \(.song): cards=\(.stages.author // "n/a"), render=\(.stages.render // "n/a")"' out/$D/report.json >> "$GITHUB_STEP_SUMMARY"
-          [ -f out/$D/report.json ] && python -m pipeline buffer summary out/$D >> "$GITHUB_STEP_SUMMARY"
-          echo "Results: Drive/ready/$D." >> "$GITHUB_STEP_SUMMARY"
-      - name: "Empty Drive/audio completely (video built or not; set repo variable VYBEX_CLEAN_AUDIO=0 to switch off)"
-        if: always() && vars.VYBEX_CLEAN_AUDIO != '0'
-        run: bash scripts/drive_clean_audio.sh "out/$(date -u +%F)/report.json"
-      - name: "Memory + cleanup: when Drive/audio has no songs left, remember what was processed, then empty done/ (scripts/drive_clean.sh)"
-        if: always()
-        run: bash scripts/drive_clean.sh
+          set -eu
+          test -n "$CLAUDE_CODE_OAUTH_TOKEN"
+          cd "$RUNNER_TEMP"
+          if printf '%s\n' 'Reply with just OK.' | timeout 90 claude -p --model sonnet --tools "" --output-format text --no-session-persistence > reply.txt 2> cli-error.txt && grep -Eiq '^[[:space:]]*OK[.!]?[[:space:]]*$' reply.txt; then
+            echo "PASS: Sonnet answered the tools-disabled request"
+          else
+            if grep -Eiq 'rate limit|usage limit|quota|429' reply.txt cli-error.txt; then echo "FAIL: rate or usage limit"
+            elif grep -Eiq 'unauth|expired|log in|login|401|invalid token' reply.txt cli-error.txt; then echo "FAIL: authentication"
+            else echo "FAIL: no verified model reply"; fi
+            exit 1
+          fi
