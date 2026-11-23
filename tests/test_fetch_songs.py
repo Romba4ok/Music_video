@@ -219,6 +219,18 @@ def run_args(tmp_path, queue="", **kw):
     return Namespace(out=str(tmp_path / "out"), have_file=None, state=str(tmp_path / "memory.md"), queue=str(q), max=5, tries=40, record_used=None, prune=None, discover=False, previews=False, force_retry=False, **kw)
 
 
+def test_same_day_retry_resumes_after_the_last_checked_song(tmp_path, monkeypatch):
+    args = run_args(tmp_path, "A | One | | |\nA | Two | | |\nA | Three | | |", download_only=True)
+    checked = []
+    def miss(w, *args, **kwargs):
+        checked.append(w["title"])
+        return None, "catalog:unavailable"
+    monkeypatch.setattr(fetch_songs, "fetch_one", miss)
+    for args.tries in (3, 1, 1, 1):
+        fetch_songs.run(args, sleep=lambda _: None)
+    assert checked == ["One", "Two", "Three", "One", "Two", "Three"]
+
+
 def test_run_journal_dedup_and_retry_window(tmp_path, monkeypatch):
     cfg = {"licenses_allowed": ["by"], "sources": {"order": ["openverse"]}}
     searchers = {"openverse": lambda q, n, c, e: [cand()] if "Таю" in q else []}

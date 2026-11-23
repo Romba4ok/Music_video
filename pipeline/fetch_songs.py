@@ -446,7 +446,10 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     enqueue(cands)
     if download_only and replacement_attempts is None:
         # On the next runner, start with untried queue rows before repeating temporary failures.
-        pending.sort(key=lambda item: (item[2] is not None, (item[2] or {}).get("date", "")))
+        journal_order = {k: n for n, k in enumerate(state["skipped"])}
+        pending.sort(key=lambda item: ((item[2] or {}).get("date", ""),
+                                       read_tag((item[2] or {}).get("detail", ""))[0] == sig,
+                                       journal_order.get(item[1], -1)))
     # Leave time for the workflow's Drive upload before the 30-minute runner timeout.
     deadline = time.monotonic() + 20 * 60 if download_only else float("inf")
     if stop_at is not None:  # Replacement searches share the generate job's remaining budget.
@@ -511,6 +514,9 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
             state["skipped"].pop(k, None)
             got.append(name)
         else:
+            if download_only:
+                # Preserve check order within a date when the daily time budget cuts a sweep short.
+                state["skipped"].pop(k, None)
             state["skipped"][k] = {"status": "skipped", "date": today, "song": song, "file": "", "detail": tag(sig, sk, today, why)}
             kind = why.split(" (")[0].split(":")[0][:40]
             skip_kinds[kind] = skip_kinds.get(kind, 0) + 1
