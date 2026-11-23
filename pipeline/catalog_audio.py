@@ -216,7 +216,15 @@ class CatalogClient:
         if site == "mp3pm":
             # This is the public search form's own endpoint (SearchElementCtrl).
             # Its obsolete GET form returns the home page for every query.
-            with self.request(base + "/public/api.search.php", data={"q": query}) as response:
+            try:
+                response = self.request(base + "/public/api.search.php", data={"q": query})
+            except requests.HTTPError as exc:
+                # The form can return 404 before it provides a results URL.
+                # Keep searching this catalog for the remaining queue entries.
+                if getattr(exc.response, "status_code", None) == 404:
+                    return []
+                raise
+            with response:
                 target = response.text.strip()
                 if target.startswith('"'):
                     target = json.loads(target)

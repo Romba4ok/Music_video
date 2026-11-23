@@ -97,20 +97,25 @@ def test_muzlap_uses_published_form_and_track_attributes():
     assert track.landing == 'https://muzlap.com/123-xcho-veter.html'
 
 
-def test_missing_mp3pm_result_does_not_disable_later_queries():
+@pytest.mark.parametrize("missing", ["form", "results"])
+def test_missing_mp3pm_result_does_not_disable_later_queries(missing):
     calls = []
 
     class HTTP:
         def post(self, url, **kwargs):
-            return Response(url, 'https://s-query.mp3.pm/')
+            calls.append("form")
+            code = 404 if missing == "form" and len(calls) == 1 else 200
+            return Response(url, 'https://s-query.mp3.pm/', code=code)
 
         def get(self, url, **kwargs):
-            calls.append(url)
-            return Response(url, MP3PM, code=404 if len(calls) == 1 else 200)
+            calls.append("results")
+            code = 404 if missing == "results" and calls.count("results") == 1 else 200
+            return Response(url, MP3PM, code=code)
 
     client = catalog_audio.CatalogClient(HTTP())
     assert client.search('mp3pm', 'not in catalog') == []
     assert client.search('mp3pm', 'Xcho Ветер')[0].artist == 'Xcho'
+    assert calls.count("form") == 2
 
 
 def test_proxy_applies_to_public_post_search(monkeypatch):
