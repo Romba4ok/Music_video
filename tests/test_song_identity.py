@@ -64,6 +64,23 @@ def test_lookup_finds_guest_credited_in_artist_instead_of_title(monkeypatch):
     assert song_identity._references.__wrapped__("Xcho", "Ветер (feat. DanRi)") == (TEXT,)
 
 
+@pytest.mark.parametrize("artist, title, accepted", [
+    ("NAVAI", "Дай знать (Muzlap.com)", True),
+    ("NAVAI", "Дай знать (Muzvoy.com)", True),
+    ("NAVAI", "Дай знать (Remix) (Muzlap.com)", False),
+    ("Другой", "Дай знать (Muzlap.com)", False),
+    ("NAVAI", "Другая песня (Muzlap.com)", False),
+])
+def test_only_catalog_suffix_is_ignored_in_embedded_title(monkeypatch, artist, title, accepted):
+    result = CompletedProcess([], 0, stdout=json.dumps({"format": {"tags": {"artist": artist, "title": title}}}))
+    monkeypatch.setattr(song_identity.subprocess, "run", lambda *args, **kwargs: result)
+    if accepted:
+        song_identity._check_tags(Path("unused"), "NAVAI", "Дай знать")
+    else:
+        with pytest.raises(Refused, match="embedded artist"):
+            song_identity._check_tags(Path("unused"), "NAVAI", "Дай знать")
+
+
 def test_crediting_requested_artist_as_guest_does_not_confirm_the_lead(monkeypatch):
     tags = {"artist": "Другой feat. Артист", "title": "Название"}
     result = CompletedProcess([], 0, stdout=json.dumps({"format": {"tags": tags}}))

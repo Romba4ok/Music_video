@@ -394,7 +394,7 @@ def run(a, cfg=None, searchers=None, fetch_chart=None, sleep=time.sleep, find=No
     qkeys = {key(e["artist"], e["title"]) for e in parse_queue(qtext)}  # previews only for songs of the owner's list
     sig = search_signature(cfg)
     if download_only:
-        sig = hashlib.sha1((sig + ":download-only-lyrics-v3").encode()).hexdigest()[:8]
+        sig = hashlib.sha1((sig + ":download-only-lyrics-v4").encode()).hexdigest()[:8]
     # Public catalogs exhaust the existing queue before asking for chart additions.
     cands = wanted(cfg, qtext, (lambda cfg: []) if download_only else fetch_chart, taste)
     got, tries, dead, blocked, retried, skip_kinds, src_states = [], 0, set(), 0, 0, {}, {}

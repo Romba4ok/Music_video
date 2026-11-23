@@ -1,5 +1,6 @@
 """Check downloaded audio against the requested song before it leaves staging."""
 import json
+import re
 import subprocess
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -38,7 +39,11 @@ def _check_tags(path, artist, title):
     if result.returncode:
         raise Refused("identity: unreadable audio metadata")
     tags = {k.lower(): v for k, v in json.loads(result.stdout).get("format", {}).get("tags", {}).items()}
-    embedded = sources.Candidate("tags", tags.get("title") or title, tags.get("artist") or artist)
+    tagged_title = tags.get("title") or title
+    if tagged_title != title:
+        # These catalogs append their domain to the ID3 title, including on original recordings.
+        tagged_title = re.sub(r"\s+\((?:muzlap|muzvoy)\.com\)\s*\Z", "", tagged_title, flags=re.I)
+    embedded = sources.Candidate("tags", tagged_title, tags.get("artist") or artist)
     if not sources.matches(artist, title, embedded, collaborations=True):
         raise Refused("identity: embedded artist, guests or title differ from the requested recording")
 
